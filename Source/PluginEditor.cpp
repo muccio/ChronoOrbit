@@ -135,6 +135,152 @@ void OrbitVisualizerComponent::mouseDown (const juce::MouseEvent& event)
     }
 }
 
+bool OrbitVisualizerComponent::findNodeAt (float mouseX, float mouseY, int& outLane, int& outStep) const
+{
+    const float cx = static_cast<float> (getWidth()) * 0.5f;
+    const float cy = static_cast<float> (getHeight()) * 0.5f;
+    const float maxRadius = juce::jmin (cx, cy) - 24.0f;
+    const float minRadius = maxRadius * 0.22f;
+    const float radiusStep = (maxRadius - minRadius) / static_cast<float> (AlgorithmicRhythm::kMaxLanes - 1);
+
+    for (int lane = 0; lane < AlgorithmicRhythm::kMaxLanes; ++lane)
+    {
+        const auto& tele = processor.getRhythmEngine().getTelemetry (lane);
+        const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+        const float r = minRadius + static_cast<float> (lane) * radiusStep;
+
+        for (int s = 0; s < steps; ++s)
+        {
+            const float angle = -juce::MathConstants<float>::halfPi +
+                                (juce::MathConstants<float>::twoPi * static_cast<float> (s)) / static_cast<float> (steps);
+            const float nx = cx + r * std::cos (angle);
+            const float ny = cy + r * std::sin (angle);
+
+            const float dx = mouseX - nx;
+            const float dy = mouseY - ny;
+            if ((dx * dx + dy * dy) <= (14.0f * 14.0f))
+            {
+                outLane = lane;
+                outStep = s;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+void OrbitVisualizerComponent::mouseDoubleClick (const juce::MouseEvent& event)
+{
+    int lane = -1, step = -1;
+    if (findNodeAt (event.position.x, event.position.y, lane, step))
+    {
+        setSelectedLane (lane);
+        if (onStepToggled)
+            onStepToggled (lane, step);
+        else
+            processor.toggleLaneStep (lane, step);
+
+        if (onLaneSelected)
+            onLaneSelected (lane);
+
+        repaint();
+    }
+}
+
+//==============================================================================
+// StepStripComponent Implementation
+//==============================================================================
+StepStripComponent::StepStripComponent (MidiRythmGenProcessor& proc)
+    : processor (proc)
+{
+}
+
+void StepStripComponent::paint (juce::Graphics& g)
+{
+    const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
+    const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+    const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
+    const int curStep = tele.currentStep.load (std::memory_order_relaxed);
+    const juce::Colour trackCol = OrbitVisualizerComponent::laneColours[currentTrack];
+
+    const float width = static_cast<float> (getWidth());
+    const float height = static_cast<float> (getHeight());
+
+    g.setColour (juce::Colour (0xff101319));
+    g.fillRoundedRectangle (0.0f, 0.0f, width, height, 4.0f);
+    g.setColour (juce::Colour (0xff1f2532));
+    g.drawRoundedRectangle (0.0f, 0.0f, width, height, 4.0f, 1.0f);
+
+    const float padSpacing = 3.0f;
+    const float totalSpacing = padSpacing * static_cast<float> (steps + 1);
+    const float padWidth = (width - totalSpacing) / static_cast<float> (steps);
+    const float padHeight = height - 6.0f;
+
+    g.setFont (juce::Font (steps > 16 ? 8.0f : 10.0f, juce::Font::bold));
+
+    for (int s = 0; s < steps; ++s)
+    {
+        const float px = padSpacing + static_cast<float> (s) * (padWidth + padSpacing);
+        const float py = 3.0f;
+        const bool isHit = (activeMask & (1U << s)) != 0;
+        const bool isPlayhead = (s == curStep);
+
+        juce::Rectangle<float> padRect (px, py, padWidth, padHeight);
+
+        if (isHit)
+        {
+            g.setColour (trackCol.withAlpha (0.9f));
+            g.fillRoundedRectangle (padRect, 3.0f);
+            g.setColour (juce::Colours::black);
+        }
+        else
+        {
+            g.setColour (juce::Colour (0xff1a2029));
+            g.fillRoundedRectangle (padRect, 3.0f);
+            g.setColour (juce::Colours::white.withAlpha (0.4f));
+        }
+
+        g.drawText (juce::String (s + 1), padRect.toNearestInt(), juce::Justification::centred);
+
+        if (isPlayhead)
+        {
+            g.setColour (juce::Colours::white);
+            g.drawRoundedRectangle (padRect, 3.0f, 2.0f);
+        }
+        else
+        {
+            g.setColour (juce::Colour (0xff2b3340));
+            g.drawRoundedRectangle (padRect, 3.0f, 1.0f);
+        }
+    }
+}
+
+void StepStripComponent::mouseDown (const juce::MouseEvent& event)
+{
+    const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
+    const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+    const float width = static_cast<float> (getWidth());
+    const float padSpacing = 3.0f;
+    const float totalSpacing = padSpacing * static_cast<float> (steps + 1);
+    const float padWidth = (width - totalSpacing) / static_cast<float> (steps);
+
+    const float x = event.position.x;
+    for (int s = 0; s < steps; ++s)
+    {
+        const float px = padSpacing + static_cast<float> (s) * (padWidth + padSpacing);
+        if (x >= px && x <= px + padWidth)
+        {
+            if (onStepToggled)
+                onStepToggled (currentTrack, s);
+            else
+                processor.toggleLaneStep (currentTrack, s);
+
+            repaint();
+            break;
+        }
+    }
+}
+
 void OrbitVisualizerComponent::updateAnimation()
 {
     for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
@@ -183,7 +329,7 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
         const float playhead = tele.playheadNorm.load (std::memory_order_relaxed);
         const float flash = triggerFlashIntensity[static_cast<size_t> (lane)];
 
-        const float r = minRadius + lane * radiusStep;
+        const float r = minRadius + static_cast<float> (lane) * radiusStep;
         const juce::Colour baseColour = laneColours[lane];
         const bool isSelected = (lane == selectedLane);
 
@@ -254,7 +400,8 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
 MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     : AudioProcessorEditor (&p),
       audioProcessor (p),
-      orbitVisualizer (p)
+      orbitVisualizer (p),
+      stepStrip (p)
 {
     setLookAndFeel (&customLookAndFeel);
 
@@ -302,7 +449,7 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     trackEnabledToggle.setColour (juce::ToggleButton::tickColourId, juce::Colour (0xff00e5ff));
     addAndMakeVisible (trackEnabledToggle);
 
-    algoComboBox.addItemList ({ "Euclidean (Bjorklund)", "Markov Chain", "Poisson Burst" }, 1);
+    algoComboBox.addItemList ({ "Euclidean (Bjorklund)", "Markov Chain", "Poisson Burst", "Custom Pattern" }, 1);
     addAndMakeVisible (algoComboBox);
     algoLabel.setText ("ALGORITHM", juce::dontSendNotification);
     algoLabel.setFont (juce::Font (10.0f, juce::Font::bold));
@@ -334,6 +481,25 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     setupKnob (velocitySlider, velocityLabel, "VELOCITY", "");
     setupKnob (velocityRndSlider, velocityRndLabel, "VEL RND", "");
     setupKnob (gateSlider, gateLabel, "GATE", "x");
+
+    // Step sequencer strip setup
+    stepStripLabel.setText ("STEP SEQUENCER (CLICK PAD OR DOUBLE-CLICK ORBIT NODE)", juce::dontSendNotification);
+    stepStripLabel.setFont (juce::Font (9.0f, juce::Font::bold));
+    stepStripLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.5f));
+    addAndMakeVisible (stepStripLabel);
+
+    stepStrip.onStepToggled = [this] (int track, int step) {
+        audioProcessor.toggleLaneStep (track, step);
+        orbitVisualizer.repaint();
+        stepStrip.repaint();
+    };
+    addAndMakeVisible (stepStrip);
+
+    orbitVisualizer.onStepToggled = [this] (int lane, int step) {
+        audioProcessor.toggleLaneStep (lane, step);
+        orbitVisualizer.repaint();
+        stepStrip.repaint();
+    };
 
     // Initialize track 0
     selectTrack (0);
@@ -377,6 +543,7 @@ void MidiRythmGenEditor::selectTrack (int trackIndex)
     }
 
     orbitVisualizer.setSelectedLane (currentTrackIndex);
+    stepStrip.setTrack (currentTrackIndex);
     bindTrackAttachments (currentTrackIndex);
 }
 
@@ -451,6 +618,7 @@ void MidiRythmGenEditor::timerCallback()
 {
     orbitVisualizer.updateAnimation();
     orbitVisualizer.repaint();
+    stepStrip.repaint();
 }
 
 void MidiRythmGenEditor::paint (juce::Graphics& g)
@@ -547,4 +715,8 @@ void MidiRythmGenEditor::resized()
 
     pitchRndLabel.setBounds (535 + 4 * kSpacing, kY3, kW, 14);
     pitchRndSlider.setBounds (535 + 4 * kSpacing, kY3 + 14, kW, kH);
+
+    // Row 4: Step Sequencer Strip
+    stepStripLabel.setBounds (535, 470, 365, 14);
+    stepStrip.setBounds (535, 486, 365, 38);
 }

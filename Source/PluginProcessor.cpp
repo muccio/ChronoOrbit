@@ -138,6 +138,7 @@ void MidiRythmGenProcessor::cacheParamPointers()
         cp.gate           = apvts.getRawParameterValue (getParamId (i, "gate"));
         cp.scale          = apvts.getRawParameterValue (getParamId (i, "scale"));
         cp.pitchRnd       = apvts.getRawParameterValue (getParamId (i, "pitch_rnd"));
+        cp.customMask     = apvts.getRawParameterValue (getParamId (i, "custom_mask"));
     }
 }
 
@@ -172,6 +173,7 @@ void MidiRythmGenProcessor::readLaneParameters (AlgorithmicRhythm::LaneParameter
         p.scale              = (cp.scale != nullptr) ? static_cast<AlgorithmicRhythm::ScaleType> (static_cast<int> (cp.scale->load (std::memory_order_relaxed))) : AlgorithmicRhythm::ScaleType::NaturalMinor;
         p.pitchRandomRange   = (cp.pitchRnd != nullptr) ? static_cast<int> (cp.pitchRnd->load (std::memory_order_relaxed)) : 0;
         p.mutationRate       = globalMut;
+        p.customPatternMask  = (cp.customMask != nullptr) ? static_cast<uint32_t> (static_cast<int> (cp.customMask->load (std::memory_order_relaxed))) : 0;
     }
 }
 
@@ -379,7 +381,7 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiRythmGenProcessor::creat
         scaleChoices.add (AlgorithmicRhythm::ScaleQuantizer::getScaleName (static_cast<AlgorithmicRhythm::ScaleType> (s)));
     }
 
-    juce::StringArray algoChoices = { "Euclidean", "Markov", "Poisson Burst" };
+    juce::StringArray algoChoices = { "Euclidean", "Markov", "Poisson Burst", "Custom Pattern" };
 
     // Default note presets for standard drum/percussion tracks (General MIDI standard mappings)
     static const int defaultNotes[AlgorithmicRhythm::kMaxLanes] = { 36, 38, 42, 46, 49, 51, 60, 64 };
@@ -475,9 +477,50 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiRythmGenProcessor::creat
             juce::ParameterID (prefix + "pitch_rnd", 1),
             namePrefix + "Pitch Random Range",
             0, 24, 0));
+
+        params.push_back (std::make_unique<juce::AudioParameterInt> (
+            juce::ParameterID (prefix + "custom_mask", 1),
+            namePrefix + "Custom Mask",
+            std::numeric_limits<int>::min(),
+            std::numeric_limits<int>::max(),
+            0));
     }
 
     return { params.begin(), params.end() };
+}
+
+void MidiRythmGenProcessor::toggleLaneStep (int laneIdx, int stepIdx)
+{
+    if (laneIdx < 0 || laneIdx >= AlgorithmicRhythm::kMaxLanes || stepIdx < 0 || stepIdx >= AlgorithmicRhythm::kMaxSteps)
+        return;
+
+    auto& tele = rhythmEngine.getTelemetry (laneIdx);
+    uint32_t currentMask = tele.activePatternMask.load (std::memory_order_relaxed);
+
+    // Flip step bit
+    currentMask ^= (1U << stepIdx);
+
+    // Update custom_mask parameter in APVTS
+    if (auto* intParam = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "custom_mask"))))
+    {
+        *intParam = static_cast<int> (currentMask);
+    }
+
+    // Switch algorithm to Custom (index 3)
+    if (auto* algoParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (laneIdx, "algo"))))
+    {
+        *algoParam = 3; // Custom Pattern
+    }
+
+    // Immediately update telemetry so UI updates without lag
+    tele.activePatternMask.store (currentMask, std::memory_order_relaxed);
+}
+
+uint32_t MidiRythmGenProcessor::getLanePattern (int laneIdx) const
+{
+    if (laneIdx < 0 || laneIdx >= AlgorithmicRhythm::kMaxLanes)
+        return 0;
+    return rhythmEngine.getTelemetry (laneIdx).activePatternMask.load (std::memory_order_relaxed);
 }
 
 //==============================================================================

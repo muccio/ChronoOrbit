@@ -47,6 +47,9 @@ public:
     AlgorithmicRhythm::RhythmEngine& getRhythmEngine() noexcept { return rhythmEngine; }
     const AlgorithmicRhythm::RhythmEngine& getRhythmEngine() const noexcept { return rhythmEngine; }
 
+    void toggleLaneStep (int laneIdx, int stepIdx);
+    uint32_t getLanePattern (int laneIdx) const;
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     // Parameter ID helper
@@ -80,6 +83,7 @@ private:
         std::atomic<float>* gate { nullptr };
         std::atomic<float>* scale { nullptr };
         std::atomic<float>* pitchRnd { nullptr };
+        std::atomic<float>* customMask { nullptr };
     };
 
     std::array<CachedLaneParams, AlgorithmicRhythm::kMaxLanes> cachedLaneParams;

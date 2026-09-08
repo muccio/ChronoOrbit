@@ -286,6 +286,12 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
                 state.cachedPattern = activePattern;
             }
         }
+        else if (params.algorithm == AlgorithmMode::Custom)
+        {
+            const uint32_t validMask = (steps == 32) ? 0xFFFFFFFFU : ((1U << steps) - 1U);
+            activePattern = params.customPatternMask & validMask;
+            state.cachedPattern = activePattern;
+        }
         else
         {
             activePattern = state.cachedPattern;
@@ -332,7 +338,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
                 bool isHit = false;
                 int currentVelocity = params.velocity;
 
-                if (params.algorithm == AlgorithmMode::Euclidean)
+                if (params.algorithm == AlgorithmMode::Euclidean || params.algorithm == AlgorithmMode::Custom)
                 {
                     isHit = (activePattern & (1U << stepInPattern)) != 0;
                 }

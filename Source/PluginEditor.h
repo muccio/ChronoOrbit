@@ -39,10 +39,13 @@ public:
     void setSelectedLane (int lane) { selectedLane = lane; repaint(); }
 
     std::function<void(int)> onLaneSelected;
+    std::function<void(int lane, int step)> onStepToggled;
 
     static const juce::Colour laneColours[AlgorithmicRhythm::kMaxLanes];
 
     void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDoubleClick (const juce::MouseEvent& event) override;
+    bool findNodeAt (float x, float y, int& outLane, int& outStep) const;
 
 private:
     MidiRythmGenProcessor& processor;
@@ -52,6 +55,29 @@ private:
     std::array<float, AlgorithmicRhythm::kMaxLanes> triggerFlashIntensity {};
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (OrbitVisualizerComponent)
+};
+
+//==============================================================================
+// Interactive Linear Step-Sequencer Strip
+//==============================================================================
+class StepStripComponent : public juce::Component
+{
+public:
+    explicit StepStripComponent (MidiRythmGenProcessor& proc);
+    ~StepStripComponent() override = default;
+
+    void paint (juce::Graphics& g) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+
+    void setTrack (int trackIndex) { currentTrack = trackIndex; repaint(); }
+
+    std::function<void(int track, int step)> onStepToggled;
+
+private:
+    MidiRythmGenProcessor& processor;
+    int currentTrack { 0 };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StepStripComponent)
 };
 
 //==============================================================================
@@ -129,6 +155,10 @@ private:
     juce::Label  velocityRndLabel;
     juce::Slider gateSlider;
     juce::Label  gateLabel;
+
+    // Interactive step strip
+    juce::Label stepStripLabel;
+    StepStripComponent stepStrip;
 
     // Dynamic APVTS attachments for the selected track
     std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment> trackEnabledAttach;

@@ -39,7 +39,13 @@ Ogni traccia opera con parametri completamente indipendenti:
   - Cambio al volo della lunghezza di step o del pattern
   - Re-triggering della stessa nota su stesso canale prima della fine del gate
 
-### 4. Interfaccia Vettoriale Moderna (Concentric Polymetric Orbits)
+### 4. Editing Interattivo dei Pattern (Doppio Click & Step Strip)
+- **Doppio Click sui Nodi dell'Orbita**: Facendo doppio click su qualsiasi punto (spento o acceso) della matrice circolare, lo step inverte il suo stato e la traccia passa istantaneamente alla modalità **Custom Pattern**.
+- **Striscia Step-Sequencer Lineare**: Sotto i controlli di traccia è presente una striscia di pad numerati ($1 \dots N$). Un singolo click su un pad attiva o disattiva il trigger al volo.
+- **Indicatore Real-Time del Playhead**: Durante la riproduzione, il pad corrispondente allo step in esecuzione si illumina con un bordo bianco pulsante a 60 FPS.
+- **Salvataggio di Stato**: Ogni modifica manuale è serializzata nell'albero APVTS, preservando il pattern editato all'interno dei progetti DAW.
+
+### 5. Interfaccia Vettoriale Moderna (Concentric Polymetric Orbits)
 - Matrice centrale con 8 orbite vettoriali concentriche renderizzate a 60 FPS in modalità lock-free.
 - Nodi di step illuminati dinamicamente (hit attivi vs riposi).
 - Raggio playhead radiale continuo per ogni traccia con flash d'impatto ad emissione decadente.

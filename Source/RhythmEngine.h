@@ -18,7 +18,8 @@ enum class AlgorithmMode : int
 {
     Euclidean = 0,
     Markov = 1,
-    PoissonBurst = 2
+    PoissonBurst = 2,
+    Custom = 3
 };
 
 enum class ScaleType : int
@@ -107,6 +108,7 @@ struct LaneParameters
     ScaleType scale { ScaleType::NaturalMinor };
     int pitchRandomRange { 0 };      // 0 to 24 scale degrees
     float mutationRate { 0.0f };     // 0.0 to 1.0 per bar mutation chance
+    uint32_t customPatternMask { 0 }; // 32-bit custom edited bitmask
 };
 
 // Lock-free telemetry exported to the UI

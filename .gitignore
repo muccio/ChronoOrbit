@@ -1,0 +1,22 @@
+# Build directories
+build/
+bin/
+lib/
+*.vst3
+*.app
+*.component
+*.clap
+
+# IDE and OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
+*.user
+
+# CMake generated
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile

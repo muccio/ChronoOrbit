@@ -344,6 +344,14 @@ bool MidiRythmGenProcessor::hasEditor() const
 //==============================================================================
 void MidiRythmGenProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
+    // 1. Sync custom masks directly into APVTS state properties
+    for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
+    {
+        apvts.state.setProperty ("lane_custom_mask_" + juce::String (i),
+                                 static_cast<juce::int64> (rhythmEngine.getCustomPatternMask (i)),
+                                 nullptr);
+    }
+
     auto state = apvts.copyState();
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
     if (xml != nullptr)
@@ -367,6 +375,7 @@ void MidiRythmGenProcessor::setStateInformation (const void* data, int sizeInByt
         {
             apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
 
+            // Layer 1: Dedicated CUSTOM_PATTERNS XML element
             if (auto* patternsElement = xmlState->getChildByName ("CUSTOM_PATTERNS"))
             {
                 for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
@@ -377,6 +386,17 @@ void MidiRythmGenProcessor::setStateInformation (const void* data, int sizeInByt
                         uint32_t mask = static_cast<uint32_t> (hexStr.getHexValue64());
                         rhythmEngine.setCustomPatternMask (i, mask);
                     }
+                }
+            }
+
+            // Layer 2: APVTS ValueTree properties (fallback & redundancy)
+            for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
+            {
+                const juce::Identifier propId ("lane_custom_mask_" + juce::String (i));
+                if (apvts.state.hasProperty (propId))
+                {
+                    uint32_t mask = static_cast<uint32_t> (static_cast<juce::int64> (apvts.state.getProperty (propId)));
+                    rhythmEngine.setCustomPatternMask (i, mask);
                 }
             }
 
@@ -556,6 +576,11 @@ void MidiRythmGenProcessor::toggleLaneStep (int laneIdx, int stepIdx)
 
     // Store in authoritative 32-bit engine storage
     rhythmEngine.setCustomPatternMask (laneIdx, currentMask);
+
+    // Persist into APVTS state immediately so it's always ready to save
+    apvts.state.setProperty ("lane_custom_mask_" + juce::String (laneIdx),
+                             static_cast<juce::int64> (currentMask),
+                             nullptr);
 
     // Immediately update telemetry so UI updates without lag
     AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];

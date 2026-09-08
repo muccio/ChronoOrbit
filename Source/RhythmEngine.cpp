@@ -98,18 +98,14 @@ void RhythmEngine::reset()
         laneStates[i].lastEvaluatedPpq = -1.0;
         laneStates[i].lastStepIndex = -1;
         laneStates[i].markovState = 0;
-        laneStates[i].cachedPattern = 0;
         laneStates[i].lastBarCount = -1;
 
         telemetry[i].currentStep.store(0, std::memory_order_relaxed);
-        telemetry[i].totalSteps.store(16, std::memory_order_relaxed);
         telemetry[i].playheadNorm.store(0.0f, std::memory_order_relaxed);
         telemetry[i].justTriggered.store(false, std::memory_order_relaxed);
         telemetry[i].lastVelocity.store(0, std::memory_order_relaxed);
-        telemetry[i].activePatternMask.store(0, std::memory_order_relaxed);
-        telemetry[i].swingValue.store(0.0f, std::memory_order_relaxed);
-
-        customPatternMasks[i].store(0, std::memory_order_relaxed);
+        // Note: activePatternMask and customPatternMasks are persistent configuration data
+        // and must NOT be cleared on playback stop.
     }
 }
 

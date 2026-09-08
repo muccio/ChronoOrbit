@@ -147,12 +147,12 @@ bool OrbitVisualizerComponent::findNodeAt (float mouseX, float mouseY, int& outL
     {
         const auto& tele = processor.getRhythmEngine().getTelemetry (lane);
         const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+        const float swing = tele.swingValue.load (std::memory_order_relaxed);
         const float r = minRadius + static_cast<float> (lane) * radiusStep;
 
         for (int s = 0; s < steps; ++s)
         {
-            const float angle = -juce::MathConstants<float>::halfPi +
-                                (juce::MathConstants<float>::twoPi * static_cast<float> (s)) / static_cast<float> (steps);
+            const float angle = computeStepAngle (s, steps, swing);
             const float nx = cx + r * std::cos (angle);
             const float ny = cy + r * std::sin (angle);
 
@@ -201,6 +201,7 @@ void StepStripComponent::paint (juce::Graphics& g)
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
     const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
     const int curStep = tele.currentStep.load (std::memory_order_relaxed);
+    const float swing = tele.swingValue.load (std::memory_order_relaxed);
     const juce::Colour trackCol = OrbitVisualizerComponent::laneColours[currentTrack];
 
     const float width = static_cast<float> (getWidth());
@@ -211,21 +212,11 @@ void StepStripComponent::paint (juce::Graphics& g)
     g.setColour (juce::Colour (0xff1f2532));
     g.drawRoundedRectangle (0.0f, 0.0f, width, height, 4.0f, 1.0f);
 
-    const float padSpacing = 3.0f;
-    const float totalSpacing = padSpacing * static_cast<float> (steps + 1);
-    const float padWidth = (width - totalSpacing) / static_cast<float> (steps);
-    const float padHeight = height - 6.0f;
-
-    g.setFont (juce::Font (steps > 16 ? 8.0f : 10.0f, juce::Font::bold));
-
     for (int s = 0; s < steps; ++s)
     {
-        const float px = padSpacing + static_cast<float> (s) * (padWidth + padSpacing);
-        const float py = 3.0f;
+        const auto padRect = computeStepBounds (s, steps, swing, width, height);
         const bool isHit = (activeMask & (1U << s)) != 0;
         const bool isPlayhead = (s == curStep);
-
-        juce::Rectangle<float> padRect (px, py, padWidth, padHeight);
 
         if (isHit)
         {
@@ -240,7 +231,11 @@ void StepStripComponent::paint (juce::Graphics& g)
             g.setColour (juce::Colours::white.withAlpha (0.4f));
         }
 
-        g.drawText (juce::String (s + 1), padRect.toNearestInt(), juce::Justification::centred);
+        if (padRect.getWidth() >= 12.0f)
+        {
+            g.setFont (juce::Font (padRect.getWidth() < 20.0f ? 8.0f : 10.0f, juce::Font::bold));
+            g.drawText (juce::String (s + 1), padRect.toNearestInt(), juce::Justification::centred);
+        }
 
         if (isPlayhead)
         {
@@ -259,16 +254,14 @@ void StepStripComponent::mouseDown (const juce::MouseEvent& event)
 {
     const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+    const float swing = tele.swingValue.load (std::memory_order_relaxed);
     const float width = static_cast<float> (getWidth());
-    const float padSpacing = 3.0f;
-    const float totalSpacing = padSpacing * static_cast<float> (steps + 1);
-    const float padWidth = (width - totalSpacing) / static_cast<float> (steps);
+    const float height = static_cast<float> (getHeight());
 
-    const float x = event.position.x;
     for (int s = 0; s < steps; ++s)
     {
-        const float px = padSpacing + static_cast<float> (s) * (padWidth + padSpacing);
-        if (x >= px && x <= px + padWidth)
+        const auto padRect = computeStepBounds (s, steps, swing, width, height);
+        if (padRect.contains (event.position))
         {
             if (onStepToggled)
                 onStepToggled (currentTrack, s);
@@ -327,6 +320,7 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
         const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
         const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
         const float playhead = tele.playheadNorm.load (std::memory_order_relaxed);
+        const float swing = tele.swingValue.load (std::memory_order_relaxed);
         const float flash = triggerFlashIntensity[static_cast<size_t> (lane)];
 
         const float r = minRadius + static_cast<float> (lane) * radiusStep;
@@ -349,8 +343,7 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
         // Draw step nodes
         for (int s = 0; s < steps; ++s)
         {
-            const float angle = -juce::MathConstants<float>::halfPi +
-                                (juce::MathConstants<float>::twoPi * static_cast<float> (s)) / static_cast<float> (steps);
+            const float angle = computeStepAngle (s, steps, swing);
 
             const float nx = cx + r * std::cos (angle);
             const float ny = cy + r * std::sin (angle);

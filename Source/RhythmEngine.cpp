@@ -107,6 +107,9 @@ void RhythmEngine::reset()
         telemetry[i].justTriggered.store(false, std::memory_order_relaxed);
         telemetry[i].lastVelocity.store(0, std::memory_order_relaxed);
         telemetry[i].activePatternMask.store(0, std::memory_order_relaxed);
+        telemetry[i].swingValue.store(0.0f, std::memory_order_relaxed);
+
+        customPatternMasks[i].store(0, std::memory_order_relaxed);
     }
 }
 
@@ -216,6 +219,63 @@ bool RhythmEngine::evaluatePoissonHit(float lambda, FastRandom& localRng) noexce
     return localRng.nextFloat() < pTrigger;
 }
 
+void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes]) noexcept
+{
+    for (int laneIdx = 0; laneIdx < kMaxLanes; ++laneIdx)
+    {
+        const auto& params = lanes[laneIdx];
+        auto& tele = telemetry[static_cast<size_t>(laneIdx)];
+        auto& state = laneStates[static_cast<size_t>(laneIdx)];
+        const int steps = std::clamp(params.steps, 1, kMaxSteps);
+
+        tele.totalSteps.store(steps, std::memory_order_relaxed);
+        tele.swingValue.store(params.swing, std::memory_order_relaxed);
+
+        const uint32_t validMask = (steps == 32) ? 0xFFFFFFFFU : ((1U << steps) - 1U);
+        uint32_t activePattern = 0;
+
+        if (params.algorithm == AlgorithmMode::Euclidean)
+        {
+            activePattern = generateEuclideanPattern(steps, params.euclideanPulses, params.euclideanRotation);
+            state.cachedPattern = activePattern;
+        }
+        else if (params.algorithm == AlgorithmMode::Custom)
+        {
+            activePattern = customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed) & validMask;
+            state.cachedPattern = activePattern;
+        }
+        else
+        {
+            if (state.cachedPattern == 0)
+            {
+                if (params.algorithm == AlgorithmMode::Markov)
+                {
+                    int mState = 0;
+                    for (int s = 0; s < steps; ++s)
+                    {
+                        if (evaluateMarkovHit(mState, params.markovDensity, rng))
+                            activePattern |= (1U << s);
+                    }
+                }
+                else if (params.algorithm == AlgorithmMode::PoissonBurst)
+                {
+                    for (int s = 0; s < steps; ++s)
+                    {
+                        if (evaluatePoissonHit(params.poissonLambda, rng))
+                            activePattern |= (1U << s);
+                    }
+                }
+                state.cachedPattern = activePattern;
+            }
+            else
+            {
+                activePattern = state.cachedPattern & validMask;
+            }
+        }
+        tele.activePatternMask.store(activePattern, std::memory_order_relaxed);
+    }
+}
+
 void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
                                 double ppqStart,
                                 double ppqEnd,
@@ -249,6 +309,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
 
         const int steps = std::clamp(params.steps, 1, kMaxSteps);
         tele.totalSteps.store(steps, std::memory_order_relaxed);
+        tele.swingValue.store(params.swing, std::memory_order_relaxed);
 
         // Polyrhythm clock ratio: step size in quarter notes
         // Base is 16th note (0.25 ppq)
@@ -289,7 +350,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         else if (params.algorithm == AlgorithmMode::Custom)
         {
             const uint32_t validMask = (steps == 32) ? 0xFFFFFFFFU : ((1U << steps) - 1U);
-            activePattern = params.customPatternMask & validMask;
+            activePattern = customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed) & validMask;
             state.cachedPattern = activePattern;
         }
         else

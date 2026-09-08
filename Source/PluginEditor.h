@@ -43,6 +43,17 @@ public:
 
     static const juce::Colour laneColours[AlgorithmicRhythm::kMaxLanes];
 
+    static float computeStepAngle (int step, int totalSteps, float swing) noexcept
+    {
+        if (totalSteps <= 0)
+            return -juce::MathConstants<float>::halfPi;
+
+        const float swingShift = (step % 2 != 0) ? (swing * 0.333f) : 0.0f;
+        const float effectiveStep = static_cast<float> (step) + swingShift;
+        return -juce::MathConstants<float>::halfPi +
+               (juce::MathConstants<float>::twoPi * effectiveStep) / static_cast<float> (totalSteps);
+    }
+
     void mouseDown (const juce::MouseEvent& event) override;
     void mouseDoubleClick (const juce::MouseEvent& event) override;
     bool findNodeAt (float x, float y, int& outLane, int& outStep) const;
@@ -68,6 +79,31 @@ public:
 
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
+
+    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float swing, float totalWidth, float totalHeight) noexcept
+    {
+        if (totalSteps <= 0)
+            return {};
+
+        const float margin = 4.0f;
+        const float usableWidth = totalWidth - margin * 2.0f;
+        const float gap = 2.0f;
+
+        const float swingShift0 = (step % 2 != 0) ? (swing * 0.333f) : 0.0f;
+        const float t0 = (static_cast<float> (step) + swingShift0) / static_cast<float> (totalSteps);
+
+        const int nextStep = step + 1;
+        const float swingShift1 = (nextStep < totalSteps && nextStep % 2 != 0) ? (swing * 0.333f) : 0.0f;
+        const float t1 = (static_cast<float> (nextStep) + swingShift1) / static_cast<float> (totalSteps);
+
+        const float px = margin + t0 * usableWidth + gap * 0.5f;
+        const float pxEnd = margin + t1 * usableWidth - gap * 0.5f;
+        const float pw = std::max (4.0f, pxEnd - px);
+        const float py = 3.0f;
+        const float ph = totalHeight - 6.0f;
+
+        return { px, py, pw, ph };
+    }
 
     void setTrack (int trackIndex) { currentTrack = trackIndex; repaint(); }
 

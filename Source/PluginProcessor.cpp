@@ -84,6 +84,10 @@ void MidiRythmGenProcessor::prepareToPlay (double sampleRate, int samplesPerBloc
     wasPlaying = false;
     lastPpqPosition = -1.0;
     sampleCounter = 0;
+
+    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+    readLaneParameters (lanes);
+    rhythmEngine.updateOfflineTelemetry (lanes);
 }
 
 void MidiRythmGenProcessor::releaseResources()
@@ -173,7 +177,7 @@ void MidiRythmGenProcessor::readLaneParameters (AlgorithmicRhythm::LaneParameter
         p.scale              = (cp.scale != nullptr) ? static_cast<AlgorithmicRhythm::ScaleType> (static_cast<int> (cp.scale->load (std::memory_order_relaxed))) : AlgorithmicRhythm::ScaleType::NaturalMinor;
         p.pitchRandomRange   = (cp.pitchRnd != nullptr) ? static_cast<int> (cp.pitchRnd->load (std::memory_order_relaxed)) : 0;
         p.mutationRate       = globalMut;
-        p.customPatternMask  = (cp.customMask != nullptr) ? static_cast<uint32_t> (static_cast<int> (cp.customMask->load (std::memory_order_relaxed))) : 0;
+        p.customPatternMask  = rhythmEngine.getCustomPatternMask (i);
     }
 }
 
@@ -186,9 +190,13 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     if (numSamples <= 0)
         return;
 
+    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+    readLaneParameters (lanes);
+
     auto* playHead = getPlayHead();
     if (playHead == nullptr)
     {
+        rhythmEngine.updateOfflineTelemetry (lanes);
         if (wasPlaying)
         {
             stopAllActiveNotes (midiMessages, 0);
@@ -200,6 +208,7 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     auto posOpt = playHead->getPosition();
     if (!posOpt.hasValue())
     {
+        rhythmEngine.updateOfflineTelemetry (lanes);
         if (wasPlaying)
         {
             stopAllActiveNotes (midiMessages, 0);
@@ -221,6 +230,14 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         stopAllActiveNotes (midiMessages, 0);
         wasPlaying = false;
         lastPpqPosition = -1.0;
+        rhythmEngine.reset();
+        rhythmEngine.updateOfflineTelemetry (lanes);
+        return;
+    }
+
+    if (!isPlaying)
+    {
+        rhythmEngine.updateOfflineTelemetry (lanes);
         return;
     }
 
@@ -266,10 +283,7 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     const double ppqStart = ppqPos;
     const double ppqEnd   = ppqPos + ppqDelta;
 
-    // 3. Extract parameters and run algorithmic engine
-    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
-    readLaneParameters (lanes);
-
+    // 3. Run algorithmic engine with current parameters
     scheduledNotesScratch.clear();
     rhythmEngine.processBlock (lanes,
                                ppqStart,
@@ -332,7 +346,16 @@ void MidiRythmGenProcessor::getStateInformation (juce::MemoryBlock& destData)
 {
     auto state = apvts.copyState();
     std::unique_ptr<juce::XmlElement> xml (state.createXml());
-    copyXmlToBinary (*xml, destData);
+    if (xml != nullptr)
+    {
+        auto* patternsElement = xml->createNewChildElement ("CUSTOM_PATTERNS");
+        for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
+        {
+            patternsElement->setAttribute ("lane_" + juce::String (i),
+                                           juce::String::toHexString (static_cast<juce::int64> (rhythmEngine.getCustomPatternMask (i))));
+        }
+        copyXmlToBinary (*xml, destData);
+    }
 }
 
 void MidiRythmGenProcessor::setStateInformation (const void* data, int sizeInBytes)
@@ -343,6 +366,23 @@ void MidiRythmGenProcessor::setStateInformation (const void* data, int sizeInByt
         if (xmlState->hasTagName (apvts.state.getType()))
         {
             apvts.replaceState (juce::ValueTree::fromXml (*xmlState));
+
+            if (auto* patternsElement = xmlState->getChildByName ("CUSTOM_PATTERNS"))
+            {
+                for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
+                {
+                    auto hexStr = patternsElement->getStringAttribute ("lane_" + juce::String (i));
+                    if (hexStr.isNotEmpty())
+                    {
+                        uint32_t mask = static_cast<uint32_t> (hexStr.getHexValue64());
+                        rhythmEngine.setCustomPatternMask (i, mask);
+                    }
+                }
+            }
+
+            AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+            readLaneParameters (lanes);
+            rhythmEngine.updateOfflineTelemetry (lanes);
         }
     }
 }
@@ -494,26 +534,33 @@ void MidiRythmGenProcessor::toggleLaneStep (int laneIdx, int stepIdx)
     if (laneIdx < 0 || laneIdx >= AlgorithmicRhythm::kMaxLanes || stepIdx < 0 || stepIdx >= AlgorithmicRhythm::kMaxSteps)
         return;
 
-    auto& tele = rhythmEngine.getTelemetry (laneIdx);
-    uint32_t currentMask = tele.activePatternMask.load (std::memory_order_relaxed);
+    auto* algoParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (laneIdx, "algo")));
+    const int currentAlgo = (algoParam != nullptr) ? algoParam->getIndex() : 0;
 
-    // Flip step bit
+    uint32_t currentMask = 0;
+    if (currentAlgo == 3) // Already Custom Pattern
+    {
+        currentMask = rhythmEngine.getCustomPatternMask (laneIdx);
+    }
+    else
+    {
+        // Snapshot the current active pattern mask into custom pattern
+        currentMask = rhythmEngine.getTelemetry (laneIdx).activePatternMask.load (std::memory_order_relaxed);
+        // Switch algorithm to Custom (index 3)
+        if (algoParam != nullptr)
+            *algoParam = 3;
+    }
+
+    // Flip step bit (using pure 32-bit integer arithmetic)
     currentMask ^= (1U << stepIdx);
 
-    // Update custom_mask parameter in APVTS
-    if (auto* intParam = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "custom_mask"))))
-    {
-        *intParam = static_cast<int> (currentMask);
-    }
-
-    // Switch algorithm to Custom (index 3)
-    if (auto* algoParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (laneIdx, "algo"))))
-    {
-        *algoParam = 3; // Custom Pattern
-    }
+    // Store in authoritative 32-bit engine storage
+    rhythmEngine.setCustomPatternMask (laneIdx, currentMask);
 
     // Immediately update telemetry so UI updates without lag
-    tele.activePatternMask.store (currentMask, std::memory_order_relaxed);
+    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+    readLaneParameters (lanes);
+    rhythmEngine.updateOfflineTelemetry (lanes);
 }
 
 uint32_t MidiRythmGenProcessor::getLanePattern (int laneIdx) const

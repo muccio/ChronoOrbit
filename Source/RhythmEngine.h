@@ -120,6 +120,7 @@ struct LaneVisualTelemetry
     std::atomic<bool> justTriggered { false };
     std::atomic<uint8_t> lastVelocity { 0 };
     std::atomic<uint32_t> activePatternMask { 0 }; // Bitmask of active hits
+    std::atomic<float> swingValue { 0.0f };        // Swing percentage [-1..1]
 };
 
 // Rhythmic event emitted to the audio processor MIDI scheduler
@@ -160,6 +161,23 @@ public:
                       bool isPlaying,
                       std::vector<ScheduledNote>& outScheduledNotes);
 
+    // Update telemetry patterns even when DAW transport is stopped
+    void updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes]) noexcept;
+
+    // Authoritative 32-bit custom pattern mask accessors (thread-safe, zero precision loss)
+    void setCustomPatternMask(int laneIdx, uint32_t mask) noexcept
+    {
+        if (laneIdx >= 0 && laneIdx < kMaxLanes)
+            customPatternMasks[static_cast<size_t>(laneIdx)].store(mask, std::memory_order_relaxed);
+    }
+
+    uint32_t getCustomPatternMask(int laneIdx) const noexcept
+    {
+        if (laneIdx >= 0 && laneIdx < kMaxLanes)
+            return customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed);
+        return 0;
+    }
+
     // Read telemetry for GUI
     LaneVisualTelemetry& getTelemetry(int laneIndex) noexcept
     {
@@ -174,6 +192,8 @@ public:
 private:
     double currentSampleRate { 44100.0 };
     FastRandom rng { 0xC001CAFE };
+
+    std::array<std::atomic<uint32_t>, kMaxLanes> customPatternMasks;
 
     // Per-lane internal state
     struct LaneState

@@ -7,3 +7,4 @@
 | PluginEditor Implementation | Completed | Implemented PluginEditor.h and PluginEditor.cpp (Concentric polymetric orbits, 60 FPS playhead, trigger animations, dark UI) |
 | CMakeLists.txt & Build Configuration | Completed | Configured CMakeLists.txt with C++20, JUCE 7 setup, VST3 & Standalone targets, pure MIDI effect layout |
 | Compilation & Verification | Completed | Built ChronoOrbit.vst3 and ChronoOrbit.app with 0 errors via Apple Clang on arm64 |
+| Pattern Editing Feature Brainstorming | In Progress | Explore interaction model for editing pattern steps via double-click on orbit nodes |

@@ -47,6 +47,9 @@ public:
     AlgorithmicRhythm::RhythmEngine& getRhythmEngine() noexcept { return rhythmEngine; }
     const AlgorithmicRhythm::RhythmEngine& getRhythmEngine() const noexcept { return rhythmEngine; }
 
+    void setSelectedTrackIndex (int trackIdx) noexcept { selectedTrackIndex.store (trackIdx, std::memory_order_relaxed); }
+    int getSelectedTrackIndex() const noexcept { return selectedTrackIndex.load (std::memory_order_relaxed); }
+
     void toggleLaneStep (int laneIdx, int stepIdx);
     uint32_t getLanePattern (int laneIdx) const;
 
@@ -62,6 +65,7 @@ private:
     //==============================================================================
     juce::AudioProcessorValueTreeState apvts;
     AlgorithmicRhythm::RhythmEngine rhythmEngine;
+    std::atomic<int> selectedTrackIndex { 0 };
 
     // Fast atomic parameter caches
     struct CachedLaneParams
@@ -81,7 +85,7 @@ private:
         std::atomic<float>* velocity { nullptr };
         std::atomic<float>* velocityRnd { nullptr };
         std::atomic<float>* gate { nullptr };
-        std::atomic<float>* scale { nullptr };
+        std::atomic<float>* timeWarp { nullptr };
         std::atomic<float>* pitchRnd { nullptr };
         std::atomic<float>* customMask { nullptr };
     };

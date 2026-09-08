@@ -148,11 +148,12 @@ bool OrbitVisualizerComponent::findNodeAt (float mouseX, float mouseY, int& outL
         const auto& tele = processor.getRhythmEngine().getTelemetry (lane);
         const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
         const float swing = tele.swingValue.load (std::memory_order_relaxed);
+        const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
         const float r = minRadius + static_cast<float> (lane) * radiusStep;
 
         for (int s = 0; s < steps; ++s)
         {
-            const float angle = computeStepAngle (s, steps, swing);
+            const float angle = computeStepAngle (s, steps, swing, timeWarp);
             const float nx = cx + r * std::cos (angle);
             const float ny = cy + r * std::sin (angle);
 
@@ -202,6 +203,7 @@ void StepStripComponent::paint (juce::Graphics& g)
     const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
     const int curStep = tele.currentStep.load (std::memory_order_relaxed);
     const float swing = tele.swingValue.load (std::memory_order_relaxed);
+    const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
     const juce::Colour trackCol = OrbitVisualizerComponent::laneColours[currentTrack];
 
     const float width = static_cast<float> (getWidth());
@@ -214,7 +216,7 @@ void StepStripComponent::paint (juce::Graphics& g)
 
     for (int s = 0; s < steps; ++s)
     {
-        const auto padRect = computeStepBounds (s, steps, swing, width, height);
+        const auto padRect = computeStepBounds (s, steps, swing, timeWarp, width, height);
         const bool isHit = (activeMask & (1U << s)) != 0;
         const bool isPlayhead = (s == curStep);
 
@@ -255,12 +257,13 @@ void StepStripComponent::mouseDown (const juce::MouseEvent& event)
     const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
     const float swing = tele.swingValue.load (std::memory_order_relaxed);
+    const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
     const float width = static_cast<float> (getWidth());
     const float height = static_cast<float> (getHeight());
 
     for (int s = 0; s < steps; ++s)
     {
-        const auto padRect = computeStepBounds (s, steps, swing, width, height);
+        const auto padRect = computeStepBounds (s, steps, swing, timeWarp, width, height);
         if (padRect.contains (event.position))
         {
             if (onStepToggled)
@@ -321,6 +324,7 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
         const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
         const float playhead = tele.playheadNorm.load (std::memory_order_relaxed);
         const float swing = tele.swingValue.load (std::memory_order_relaxed);
+        const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
         const float flash = triggerFlashIntensity[static_cast<size_t> (lane)];
 
         const float r = minRadius + static_cast<float> (lane) * radiusStep;
@@ -343,7 +347,7 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
         // Draw step nodes
         for (int s = 0; s < steps; ++s)
         {
-            const float angle = computeStepAngle (s, steps, swing);
+            const float angle = computeStepAngle (s, steps, swing, timeWarp);
 
             const float nx = cx + r * std::cos (angle);
             const float ny = cy + r * std::sin (angle);
@@ -368,9 +372,13 @@ void OrbitVisualizerComponent::paint (juce::Graphics& g)
             }
         }
 
-        // Draw radial playhead marker
+        // Draw radial playhead marker (warped along with geometry)
+        const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
+        const double warpedPlayhead = (std::abs (timeWarp) > 0.001f)
+            ? std::clamp (std::pow (static_cast<double> (playhead), gamma), 0.0, 1.0)
+            : static_cast<double> (playhead);
         const float playAngle = -juce::MathConstants<float>::halfPi +
-                                juce::MathConstants<float>::twoPi * playhead;
+                                static_cast<float> (juce::MathConstants<double>::twoPi * warpedPlayhead);
         const float px = cx + r * std::cos (playAngle);
         const float py = cy + r * std::sin (playAngle);
 
@@ -457,19 +465,7 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     setupKnob (probabilitySlider, probabilityLabel, "PROB", "%");
     setupKnob (markovDensitySlider, markovDensityLabel, "DENSITY", "");
     setupKnob (rootNoteSlider, rootNoteLabel, "ROOT", "");
-
-    juce::StringArray scaleList;
-    for (int s = 0; s < static_cast<int> (AlgorithmicRhythm::ScaleType::NumScales); ++s)
-    {
-        scaleList.add (AlgorithmicRhythm::ScaleQuantizer::getScaleName (static_cast<AlgorithmicRhythm::ScaleType> (s)));
-    }
-    scaleComboBox.addItemList (scaleList, 1);
-    addAndMakeVisible (scaleComboBox);
-    scaleLabel.setText ("SCALE", juce::dontSendNotification);
-    scaleLabel.setFont (juce::Font (10.0f, juce::Font::bold));
-    scaleLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.6f));
-    addAndMakeVisible (scaleLabel);
-
+    setupKnob (timeWarpSlider, timeWarpLabel, "TIME WARP", "%");
     setupKnob (pitchRndSlider, pitchRndLabel, "PITCH RND", "st");
     setupKnob (velocitySlider, velocityLabel, "VELOCITY", "");
     setupKnob (velocityRndSlider, velocityRndLabel, "VEL RND", "");
@@ -526,6 +522,7 @@ void MidiRythmGenEditor::setupKnob (juce::Slider& slider, juce::Label& label, co
 void MidiRythmGenEditor::selectTrack (int trackIndex)
 {
     currentTrackIndex = std::clamp (trackIndex, 0, AlgorithmicRhythm::kMaxLanes - 1);
+    audioProcessor.setSelectedTrackIndex (currentTrackIndex);
 
     for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
     {
@@ -553,7 +550,7 @@ void MidiRythmGenEditor::bindTrackAttachments (int trackIndex)
     probAttach.reset();
     markovDensityAttach.reset();
     rootNoteAttach.reset();
-    scaleAttach.reset();
+    timeWarpAttach.reset();
     pitchRndAttach.reset();
     velocityAttach.reset();
     velocityRndAttach.reset();
@@ -591,8 +588,8 @@ void MidiRythmGenEditor::bindTrackAttachments (int trackIndex)
     rootNoteAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         apvts, MidiRythmGenProcessor::getParamId (trackIndex, "root_note"), rootNoteSlider);
 
-    scaleAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
-        apvts, MidiRythmGenProcessor::getParamId (trackIndex, "scale"), scaleComboBox);
+    timeWarpAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        apvts, MidiRythmGenProcessor::getParamId (trackIndex, "time_warp"), timeWarpSlider);
 
     pitchRndAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         apvts, MidiRythmGenProcessor::getParamId (trackIndex, "pitch_rnd"), pitchRndSlider);
@@ -698,13 +695,13 @@ void MidiRythmGenEditor::resized()
     velocityRndLabel.setBounds (535 + 4 * kSpacing, kY2, kW, 14);
     velocityRndSlider.setBounds (535 + 4 * kSpacing, kY2 + 14, kW, kH);
 
-    // Row 3: Root, Scale, Pitch Rnd
+    // Row 3: Root, Time Warp, Pitch Rnd
     int kY3 = 380;
     rootNoteLabel.setBounds (535 + 0 * kSpacing, kY3, kW, 14);
     rootNoteSlider.setBounds (535 + 0 * kSpacing, kY3 + 14, kW, kH);
 
-    scaleLabel.setBounds (535 + 1 * kSpacing, kY3 + 6, 120, 14);
-    scaleComboBox.setBounds (535 + 1 * kSpacing, kY3 + 24, 180, 24);
+    timeWarpLabel.setBounds (535 + 2 * kSpacing, kY3, kW, 14);
+    timeWarpSlider.setBounds (535 + 2 * kSpacing, kY3 + 14, kW, kH);
 
     pitchRndLabel.setBounds (535 + 4 * kSpacing, kY3, kW, 14);
     pitchRndSlider.setBounds (535 + 4 * kSpacing, kY3 + 14, kW, kH);

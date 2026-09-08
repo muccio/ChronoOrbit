@@ -43,15 +43,18 @@ public:
 
     static const juce::Colour laneColours[AlgorithmicRhythm::kMaxLanes];
 
-    static float computeStepAngle (int step, int totalSteps, float swing) noexcept
+    static float computeStepAngle (int step, int totalSteps, float swing, float timeWarp) noexcept
     {
         if (totalSteps <= 0)
             return -juce::MathConstants<float>::halfPi;
 
-        const float swingShift = (step % 2 != 0) ? (swing * 0.333f) : 0.0f;
-        const float effectiveStep = static_cast<float> (step) + swingShift;
+        const float swingShift = (step % 2 != 0) ? (swing * 0.5f) : 0.0f;
+        const double t0 = std::clamp (static_cast<double> (step + swingShift) / static_cast<double> (totalSteps), 0.0, 0.999999);
+        const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
+        const double tWarped = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
+
         return -juce::MathConstants<float>::halfPi +
-               (juce::MathConstants<float>::twoPi * effectiveStep) / static_cast<float> (totalSteps);
+               static_cast<float> (juce::MathConstants<double>::twoPi * tWarped);
     }
 
     void mouseDown (const juce::MouseEvent& event) override;
@@ -80,7 +83,7 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
 
-    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float swing, float totalWidth, float totalHeight) noexcept
+    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float swing, float timeWarp, float totalWidth, float totalHeight) noexcept
     {
         if (totalSteps <= 0)
             return {};
@@ -89,15 +92,23 @@ public:
         const float usableWidth = totalWidth - margin * 2.0f;
         const float gap = 2.0f;
 
-        const float swingShift0 = (step % 2 != 0) ? (swing * 0.333f) : 0.0f;
-        const float t0 = (static_cast<float> (step) + swingShift0) / static_cast<float> (totalSteps);
+        const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
+
+        const float swingShift0 = (step % 2 != 0) ? (swing * 0.5f) : 0.0f;
+        const double t0 = std::clamp (static_cast<double> (step + swingShift0) / static_cast<double> (totalSteps), 0.0, 0.999999);
+        const double tw0 = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
 
         const int nextStep = step + 1;
-        const float swingShift1 = (nextStep < totalSteps && nextStep % 2 != 0) ? (swing * 0.333f) : 0.0f;
-        const float t1 = (static_cast<float> (nextStep) + swingShift1) / static_cast<float> (totalSteps);
+        double tw1 = 1.0;
+        if (nextStep < totalSteps)
+        {
+            const float swingShift1 = (nextStep % 2 != 0) ? (swing * 0.5f) : 0.0f;
+            const double t1 = std::clamp (static_cast<double> (nextStep + swingShift1) / static_cast<double> (totalSteps), 0.0, 0.999999);
+            tw1 = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t1, gamma), 0.0, 0.999999) : t1;
+        }
 
-        const float px = margin + t0 * usableWidth + gap * 0.5f;
-        const float pxEnd = margin + t1 * usableWidth - gap * 0.5f;
+        const float px = margin + static_cast<float> (tw0) * usableWidth + gap * 0.5f;
+        const float pxEnd = margin + static_cast<float> (tw1) * usableWidth - gap * 0.5f;
         const float pw = std::max (4.0f, pxEnd - px);
         const float py = 3.0f;
         const float ph = totalHeight - 6.0f;
@@ -180,8 +191,8 @@ private:
 
     juce::Slider rootNoteSlider;
     juce::Label  rootNoteLabel;
-    juce::ComboBox scaleComboBox;
-    juce::Label  scaleLabel;
+    juce::Slider timeWarpSlider;
+    juce::Label  timeWarpLabel;
 
     juce::Slider pitchRndSlider;
     juce::Label  pitchRndLabel;
@@ -207,7 +218,7 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> probAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> markovDensityAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> rootNoteAttach;
-    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> scaleAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> timeWarpAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> pitchRndAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> velocityAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> velocityRndAttach;

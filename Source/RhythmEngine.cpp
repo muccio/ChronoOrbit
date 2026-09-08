@@ -6,77 +6,6 @@ namespace AlgorithmicRhythm
 {
 
 //==============================================================================
-// ScaleQuantizer Implementation
-//==============================================================================
-
-static const int kScaleNotesMajor[]          = { 0, 2, 4, 5, 7, 9, 11 };
-static const int kScaleNotesNaturalMinor[]   = { 0, 2, 3, 5, 7, 8, 10 };
-static const int kScaleNotesHarmonicMinor[]  = { 0, 2, 3, 5, 7, 8, 11 };
-static const int kScaleNotesDorian[]         = { 0, 2, 3, 5, 7, 9, 10 };
-static const int kScaleNotesPhrygian[]       = { 0, 1, 3, 5, 7, 8, 10 };
-static const int kScaleNotesLydian[]         = { 0, 2, 4, 6, 7, 9, 11 };
-static const int kScaleNotesMixolydian[]     = { 0, 2, 4, 5, 7, 9, 10 };
-static const int kScaleNotesMinPentatonic[]  = { 0, 3, 5, 7, 10 };
-static const int kScaleNotesMajPentatonic[]  = { 0, 2, 4, 7, 9 };
-static const int kScaleNotesHirajoshi[]      = { 0, 2, 3, 7, 8 };
-static const int kScaleNotesInsen[]          = { 0, 1, 5, 7, 10 };
-static const int kScaleNotesWholeTone[]      = { 0, 2, 4, 6, 8, 10 };
-
-struct ScaleDefinition
-{
-    const char* name;
-    const int* intervals;
-    int size;
-};
-
-static const ScaleDefinition kScaleDefs[] =
-{
-    { "Chromatic",       nullptr,                    12 },
-    { "Major",           kScaleNotesMajor,           7 },
-    { "Natural Minor",   kScaleNotesNaturalMinor,    7 },
-    { "Harmonic Minor",  kScaleNotesHarmonicMinor,   7 },
-    { "Dorian",          kScaleNotesDorian,          7 },
-    { "Phrygian",        kScaleNotesPhrygian,        7 },
-    { "Lydian",          kScaleNotesLydian,          7 },
-    { "Mixolydian",      kScaleNotesMixolydian,      7 },
-    { "Minor Pentatonic",kScaleNotesMinPentatonic,   5 },
-    { "Major Pentatonic",kScaleNotesMajPentatonic,   5 },
-    { "Hirajoshi",       kScaleNotesHirajoshi,       5 },
-    { "Insen",           kScaleNotesInsen,           5 },
-    { "Whole Tone",      kScaleNotesWholeTone,       6 }
-};
-
-int ScaleQuantizer::quantizePitch(int rootNote, int scaleDegreeOffset, ScaleType scale) noexcept
-{
-    const int scaleIdx = std::clamp(static_cast<int>(scale), 0, static_cast<int>(ScaleType::NumScales) - 1);
-    const auto& def = kScaleDefs[scaleIdx];
-
-    if (def.intervals == nullptr || def.size == 12)
-    {
-        return std::clamp(rootNote + scaleDegreeOffset, 0, 127);
-    }
-
-    int octave = scaleDegreeOffset / def.size;
-    int degree = scaleDegreeOffset % def.size;
-
-    if (degree < 0)
-    {
-        degree += def.size;
-        octave -= 1;
-    }
-
-    int interval = def.intervals[degree];
-    int midiPitch = rootNote + octave * 12 + interval;
-    return std::clamp(midiPitch, 0, 127);
-}
-
-const char* ScaleQuantizer::getScaleName(ScaleType scale) noexcept
-{
-    const int scaleIdx = std::clamp(static_cast<int>(scale), 0, static_cast<int>(ScaleType::NumScales) - 1);
-    return kScaleDefs[scaleIdx].name;
-}
-
-//==============================================================================
 // RhythmEngine Implementation
 //==============================================================================
 
@@ -226,6 +155,7 @@ void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes])
 
         tele.totalSteps.store(steps, std::memory_order_relaxed);
         tele.swingValue.store(params.swing, std::memory_order_relaxed);
+        tele.timeWarpValue.store(params.timeWarp, std::memory_order_relaxed);
 
         const uint32_t validMask = (steps == 32) ? 0xFFFFFFFFU : ((1U << steps) - 1U);
         uint32_t activePattern = 0;
@@ -237,7 +167,8 @@ void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes])
         }
         else if (params.algorithm == AlgorithmMode::Custom)
         {
-            activePattern = customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed) & validMask;
+            const uint32_t rawMask = customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed) & validMask;
+            activePattern = rotatePattern(rawMask, steps, params.euclideanRotation);
             state.cachedPattern = activePattern;
         }
         else
@@ -261,11 +192,12 @@ void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes])
                             activePattern |= (1U << s);
                     }
                 }
+                activePattern = rotatePattern(activePattern, steps, params.euclideanRotation);
                 state.cachedPattern = activePattern;
             }
             else
             {
-                activePattern = state.cachedPattern & validMask;
+                activePattern = rotatePattern(state.cachedPattern & validMask, steps, params.euclideanRotation);
             }
         }
         tele.activePatternMask.store(activePattern, std::memory_order_relaxed);
@@ -306,6 +238,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         const int steps = std::clamp(params.steps, 1, kMaxSteps);
         tele.totalSteps.store(steps, std::memory_order_relaxed);
         tele.swingValue.store(params.swing, std::memory_order_relaxed);
+        tele.timeWarpValue.store(params.timeWarp, std::memory_order_relaxed);
 
         // Polyrhythm clock ratio: step size in quarter notes
         // Base is 16th note (0.25 ppq)
@@ -330,6 +263,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         }
 
         // Recompute base pattern if not cached or parameters changed
+        const uint32_t validMask = (steps == 32) ? 0xFFFFFFFFU : ((1U << steps) - 1U);
         uint32_t activePattern = 0;
         if (params.algorithm == AlgorithmMode::Euclidean)
         {
@@ -345,42 +279,65 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         }
         else if (params.algorithm == AlgorithmMode::Custom)
         {
-            const uint32_t validMask = (steps == 32) ? 0xFFFFFFFFU : ((1U << steps) - 1U);
-            activePattern = customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed) & validMask;
+            const uint32_t rawMask = customPatternMasks[static_cast<size_t>(laneIdx)].load(std::memory_order_relaxed) & validMask;
+            activePattern = rotatePattern(rawMask, steps, params.euclideanRotation);
             state.cachedPattern = activePattern;
         }
         else
         {
-            activePattern = state.cachedPattern;
+            if (state.cachedPattern == 0)
+            {
+                if (params.algorithm == AlgorithmMode::Markov)
+                {
+                    int mState = 0;
+                    for (int s = 0; s < steps; ++s)
+                    {
+                        if (evaluateMarkovHit(mState, params.markovDensity, rng))
+                            activePattern |= (1U << s);
+                    }
+                }
+                else if (params.algorithm == AlgorithmMode::PoissonBurst)
+                {
+                    for (int s = 0; s < steps; ++s)
+                    {
+                        if (evaluatePoissonHit(params.poissonLambda, rng))
+                            activePattern |= (1U << s);
+                    }
+                }
+                activePattern = rotatePattern(activePattern, steps, params.euclideanRotation);
+                state.cachedPattern = activePattern;
+            }
+            else
+            {
+                activePattern = rotatePattern(state.cachedPattern & validMask, steps, params.euclideanRotation);
+            }
         }
         tele.activePatternMask.store(activePattern, std::memory_order_relaxed);
 
-        // Calculate step bounds intersecting this block
-        // Find first integer step index k such that k * ppqPerStep >= ppqStart
-        const int64_t kStart = static_cast<int64_t>(std::floor(ppqStart / ppqPerStep));
-        const int64_t kEnd   = static_cast<int64_t>(std::ceil(ppqEnd / ppqPerStep));
+        // Calculate step bounds intersecting this block with safety margins for swing & time warp
+        const int64_t kStart = static_cast<int64_t>(std::floor(ppqStart / ppqPerStep)) - 2;
+        const int64_t kEnd   = static_cast<int64_t>(std::ceil(ppqEnd / ppqPerStep)) + 2;
 
         for (int64_t k = kStart; k <= kEnd; ++k)
         {
-            const double nominalStepPpq = static_cast<double> (k) * ppqPerStep;
+            const int64_t cycleIndex = (k >= 0) ? (k / steps) : ((k - steps + 1) / steps);
+            const int stepInPattern = static_cast<int>(k - cycleIndex * steps);
 
-            // Non-linear microtiming: swing on odd steps + humanize jitter
-            const int stepInPattern = static_cast<int>(((k % steps) + steps) % steps);
-            double microtimingPpq = 0.0;
+            // Swing microtiming
+            const float swingShift = (stepInPattern % 2 != 0) ? (params.swing * 0.5f) : 0.0f;
+            const double t0 = std::clamp(static_cast<double>(stepInPattern + swingShift) / static_cast<double>(steps), 0.0, 0.999999);
 
-            if ((stepInPattern % 2) != 0 && std::abs(params.swing) > 0.001f)
-            {
-                // Asymmetric swing shifts odd steps forward or backward
-                microtimingPpq += ppqPerStep * (params.swing * 0.333);
-            }
+            // Time warp geometric non-linear curve: tau(t) = t0^gamma
+            const double gamma = std::pow(2.0, static_cast<double>(params.timeWarp * 1.5f));
+            const double tWarped = (std::abs(params.timeWarp) > 0.001f) ? std::clamp(std::pow(t0, gamma), 0.0, 0.999999) : t0;
+
+            double effectiveStepPpq = (static_cast<double>(cycleIndex) + tWarped) * loopPpqDuration;
 
             if (params.humanize > 0.001f)
             {
                 // Micro-jitter deviation
-                microtimingPpq += ppqPerStep * (params.humanize * 0.15f * rng.nextBipolar());
+                effectiveStepPpq += ppqPerStep * (params.humanize * 0.15f * rng.nextBipolar());
             }
-
-            const double effectiveStepPpq = nominalStepPpq + microtimingPpq;
 
             // Check if this step trigger point falls within the current audio block
             if (effectiveStepPpq >= ppqStart && effectiveStepPpq < ppqEnd)
@@ -429,13 +386,13 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
                         currentVelocity = std::clamp(currentVelocity + vSpread, 1, 127);
                     }
 
-                    // Pitch quantization with musical scale & stochastic pitch offset
-                    int degreeOffset = 0;
+                    // Stochastic pitch offset
+                    int pitchOffset = 0;
                     if (params.pitchRandomRange > 0)
                     {
-                        degreeOffset = rng.nextRange(-params.pitchRandomRange, params.pitchRandomRange);
+                        pitchOffset = rng.nextRange(-params.pitchRandomRange, params.pitchRandomRange);
                     }
-                    const int midiNote = ScaleQuantizer::quantizePitch(params.rootNote, degreeOffset, params.scale);
+                    const int midiNote = std::clamp(params.rootNote + pitchOffset, 0, 127);
 
                     // Gate length calculation (in samples)
                     const double stepSamples = ppqPerStep * samplesPerQuarter;

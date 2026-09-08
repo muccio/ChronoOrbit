@@ -140,7 +140,7 @@ void MidiRythmGenProcessor::cacheParamPointers()
         cp.velocity       = apvts.getRawParameterValue (getParamId (i, "velocity"));
         cp.velocityRnd    = apvts.getRawParameterValue (getParamId (i, "velocity_rnd"));
         cp.gate           = apvts.getRawParameterValue (getParamId (i, "gate"));
-        cp.scale          = apvts.getRawParameterValue (getParamId (i, "scale"));
+        cp.timeWarp       = apvts.getRawParameterValue (getParamId (i, "time_warp"));
         cp.pitchRnd       = apvts.getRawParameterValue (getParamId (i, "pitch_rnd"));
         cp.customMask     = apvts.getRawParameterValue (getParamId (i, "custom_mask"));
     }
@@ -169,12 +169,12 @@ void MidiRythmGenProcessor::readLaneParameters (AlgorithmicRhythm::LaneParameter
         p.markovDensity      = (cp.markovDensity != nullptr) ? cp.markovDensity->load (std::memory_order_relaxed) : 0.5f;
         p.poissonLambda      = (cp.poissonLambda != nullptr) ? cp.poissonLambda->load (std::memory_order_relaxed) : 2.0f;
         p.swing              = globalSwg;
+        p.timeWarp           = (cp.timeWarp != nullptr) ? cp.timeWarp->load (std::memory_order_relaxed) : 0.0f;
         p.humanize           = globalHum;
         p.triggerProbability = (cp.probability != nullptr) ? cp.probability->load (std::memory_order_relaxed) : 1.0f;
         p.velocity           = (cp.velocity != nullptr) ? static_cast<int> (cp.velocity->load (std::memory_order_relaxed)) : 100;
         p.velocityRandom     = (cp.velocityRnd != nullptr) ? static_cast<int> (cp.velocityRnd->load (std::memory_order_relaxed)) : 0;
         p.gatePercent        = (cp.gate != nullptr) ? cp.gate->load (std::memory_order_relaxed) : 0.8f;
-        p.scale              = (cp.scale != nullptr) ? static_cast<AlgorithmicRhythm::ScaleType> (static_cast<int> (cp.scale->load (std::memory_order_relaxed))) : AlgorithmicRhythm::ScaleType::NaturalMinor;
         p.pitchRandomRange   = (cp.pitchRnd != nullptr) ? static_cast<int> (cp.pitchRnd->load (std::memory_order_relaxed)) : 0;
         p.mutationRate       = globalMut;
         p.customPatternMask  = rhythmEngine.getCustomPatternMask (i);
@@ -185,6 +185,30 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
 {
     // Clear any audio channels if host allocated a dummy buffer
     buffer.clear();
+
+    // 0. Process incoming MIDI Note-On events to update root note
+    for (const auto metadata : midiMessages)
+    {
+        const auto msg = metadata.getMessage();
+        if (msg.isNoteOn())
+        {
+            const int ch = msg.getChannel();
+            // If channel matches 1..kMaxLanes, route to track (ch - 1), otherwise route to currently selected track
+            int targetLane = selectedTrackIndex.load (std::memory_order_relaxed);
+            if (ch >= 1 && ch <= AlgorithmicRhythm::kMaxLanes)
+            {
+                targetLane = ch - 1;
+            }
+            targetLane = std::clamp (targetLane, 0, AlgorithmicRhythm::kMaxLanes - 1);
+
+            const int newRoot = msg.getNoteNumber();
+            if (auto* rootParam = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (targetLane, "root_note"))))
+            {
+                *rootParam = newRoot;
+            }
+        }
+    }
+    midiMessages.clear();
 
     const int numSamples = buffer.getNumSamples();
     if (numSamples <= 0)
@@ -434,13 +458,6 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiRythmGenProcessor::creat
         0.0f,
         juce::AudioParameterFloatAttributes().withLabel ("%")));
 
-    // Scales array for choice parameter
-    juce::StringArray scaleChoices;
-    for (int s = 0; s < static_cast<int> (AlgorithmicRhythm::ScaleType::NumScales); ++s)
-    {
-        scaleChoices.add (AlgorithmicRhythm::ScaleQuantizer::getScaleName (static_cast<AlgorithmicRhythm::ScaleType> (s)));
-    }
-
     juce::StringArray algoChoices = { "Euclidean", "Markov", "Poisson Burst", "Custom Pattern" };
 
     // Default note presets for standard drum/percussion tracks (General MIDI standard mappings)
@@ -528,10 +545,11 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiRythmGenProcessor::creat
             namePrefix + "Gate Length",
             juce::NormalisableRange<float> (0.05f, 4.0f, 0.05f), 0.8f));
 
-        params.push_back (std::make_unique<juce::AudioParameterChoice> (
-            juce::ParameterID (prefix + "scale", 1),
-            namePrefix + "Quantize Scale",
-            scaleChoices, static_cast<int> (AlgorithmicRhythm::ScaleType::NaturalMinor)));
+        params.push_back (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID (prefix + "time_warp", 1),
+            namePrefix + "Time Warp",
+            juce::NormalisableRange<float> (-1.0f, 1.0f, 0.01f), 0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
 
         params.push_back (std::make_unique<juce::AudioParameterInt> (
             juce::ParameterID (prefix + "pitch_rnd", 1),

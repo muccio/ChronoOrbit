@@ -22,24 +22,6 @@ enum class AlgorithmMode : int
     Custom = 3
 };
 
-enum class ScaleType : int
-{
-    Chromatic = 0,
-    Major,
-    NaturalMinor,
-    HarmonicMinor,
-    Dorian,
-    Phrygian,
-    Lydian,
-    Mixolydian,
-    MinorPentatonic,
-    MajorPentatonic,
-    Hirajoshi,
-    Insen,
-    WholeTone,
-    NumScales
-};
-
 // Fast non-allocating Xorshift32 PRNG suitable for real-time audio threads
 class FastRandom
 {
@@ -76,14 +58,6 @@ private:
     uint32_t state;
 };
 
-// Quantizer for scale degrees
-class ScaleQuantizer
-{
-public:
-    static int quantizePitch(int rootNote, int scaleDegreeOffset, ScaleType scale) noexcept;
-    static const char* getScaleName(ScaleType scale) noexcept;
-};
-
 // Parameters for one rhythmic lane
 struct LaneParameters
 {
@@ -99,14 +73,14 @@ struct LaneParameters
     float markovDensity { 0.5f };    // Density / transition weight for Markov
     float poissonLambda { 2.0f };    // Average events per window for Poisson
     float swing { 0.0f };            // -1.0 to 1.0 (MPC/asymmetric swing)
+    float timeWarp { 0.0f };         // -1.0 to 1.0 (non-linear metric time warp)
     float humanize { 0.0f };         // 0.0 to 1.0 (microtiming clock jitter)
     float triggerProbability { 1.0f }; // 0.0 to 1.0
     int velocity { 100 };            // 1..127
     int velocityRandom { 0 };        // ± random velocity spread
     float gatePercent { 0.8f };      // 0.05 to 4.0 of step length
     float gateRandom { 0.0f };       // 0.0 to 1.0
-    ScaleType scale { ScaleType::NaturalMinor };
-    int pitchRandomRange { 0 };      // 0 to 24 scale degrees
+    int pitchRandomRange { 0 };      // 0 to 24 semitones
     float mutationRate { 0.0f };     // 0.0 to 1.0 per bar mutation chance
     uint32_t customPatternMask { 0 }; // 32-bit custom edited bitmask
 };
@@ -121,6 +95,7 @@ struct LaneVisualTelemetry
     std::atomic<uint8_t> lastVelocity { 0 };
     std::atomic<uint32_t> activePatternMask { 0 }; // Bitmask of active hits
     std::atomic<float> swingValue { 0.0f };        // Swing percentage [-1..1]
+    std::atomic<float> timeWarpValue { 0.0f };     // Time warp percentage [-1..1]
 };
 
 // Rhythmic event emitted to the audio processor MIDI scheduler
@@ -146,6 +121,22 @@ public:
 
     // Generate Bjorklund Euclidean bit pattern
     static uint32_t generateEuclideanPattern(int steps, int pulses, int rotation) noexcept;
+
+    // Circular phase rotation for any 32-bit bitmask pattern
+    static inline uint32_t rotatePattern(uint32_t pattern, int steps, int rotation) noexcept
+    {
+        if (steps <= 1) return pattern;
+        int rot = ((rotation % steps) + steps) % steps;
+        if (rot == 0) return pattern;
+        uint32_t result = 0;
+        for (int i = 0; i < steps; ++i)
+        {
+            int srcIdx = (i - rot + steps) % steps;
+            if ((pattern & (1U << srcIdx)) != 0)
+                result |= (1U << i);
+        }
+        return result;
+    }
 
     // Mutate pattern stochastically
     static uint32_t mutatePattern(uint32_t currentPattern, int steps, float mutationRate, FastRandom& rng) noexcept;

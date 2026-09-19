@@ -49,7 +49,7 @@ public:
             return -juce::MathConstants<float>::halfPi;
 
         const float swingShift = (step % 2 != 0) ? (swing * 0.5f) : 0.0f;
-        const double t0 = std::clamp (static_cast<double> (step + swingShift) / static_cast<double> (totalSteps), 0.0, 0.999999);
+        const double t0 = std::clamp (static_cast<double> (static_cast<float> (step) + swingShift) / static_cast<double> (totalSteps), 0.0, 0.999999);
         const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
         const double tWarped = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
 
@@ -95,7 +95,7 @@ public:
         const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
 
         const float swingShift0 = (step % 2 != 0) ? (swing * 0.5f) : 0.0f;
-        const double t0 = std::clamp (static_cast<double> (step + swingShift0) / static_cast<double> (totalSteps), 0.0, 0.999999);
+        const double t0 = std::clamp (static_cast<double> (static_cast<float> (step) + swingShift0) / static_cast<double> (totalSteps), 0.0, 0.999999);
         const double tw0 = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
 
         const int nextStep = step + 1;
@@ -103,7 +103,7 @@ public:
         if (nextStep < totalSteps)
         {
             const float swingShift1 = (nextStep % 2 != 0) ? (swing * 0.5f) : 0.0f;
-            const double t1 = std::clamp (static_cast<double> (nextStep + swingShift1) / static_cast<double> (totalSteps), 0.0, 0.999999);
+            const double t1 = std::clamp (static_cast<double> (static_cast<float> (nextStep) + swingShift1) / static_cast<double> (totalSteps), 0.0, 0.999999);
             tw1 = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t1, gamma), 0.0, 0.999999) : t1;
         }
 
@@ -128,6 +128,56 @@ private:
 };
 
 //==============================================================================
+// Cubase-style DAW MIDI Clip Visualizer & External Drag-and-Drop
+//==============================================================================
+class DawMidiClipComponent : public juce::Component,
+                             public juce::SettableTooltipClient
+{
+public:
+    explicit DawMidiClipComponent (MidiRythmGenProcessor& proc);
+    ~DawMidiClipComponent() override = default;
+
+    void paint (juce::Graphics& g) override;
+    void mouseEnter (const juce::MouseEvent& event) override;
+    void mouseExit (const juce::MouseEvent& event) override;
+    void mouseDown (const juce::MouseEvent& event) override;
+    void mouseDrag (const juce::MouseEvent& event) override;
+    void mouseUp (const juce::MouseEvent& event) override;
+
+private:
+    MidiRythmGenProcessor& processor;
+    bool isHovered { false };
+    bool isDragging { false };
+    juce::Point<int> dragStartPos;
+
+    void exportAndStartDrag();
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (DawMidiClipComponent)
+};
+
+//==============================================================================
+// Vector Control Matrix for 8 Track Activation (Top Right)
+//==============================================================================
+class TrackVectorMatrixComponent : public juce::Component
+{
+public:
+    explicit TrackVectorMatrixComponent (MidiRythmGenProcessor& proc);
+    ~TrackVectorMatrixComponent() override = default;
+
+    void paint (juce::Graphics& g) override;
+    void resized() override;
+    void updateVisuals();
+
+private:
+    MidiRythmGenProcessor& processor;
+    juce::Label matrixLabel;
+    std::array<juce::TextButton, AlgorithmicRhythm::kMaxLanes> vectorButtons;
+    std::array<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>, AlgorithmicRhythm::kMaxLanes> vectorAttachments;
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (TrackVectorMatrixComponent)
+};
+
+//==============================================================================
 // Main Editor
 //==============================================================================
 class MidiRythmGenEditor : public juce::AudioProcessorEditor,
@@ -149,11 +199,21 @@ private:
     // Visualizer
     OrbitVisualizerComponent orbitVisualizer;
 
+    // DAW MIDI Clip preview & Drag-and-Drop (below orbit visualizer)
+    DawMidiClipComponent dawMidiClip;
+
     // Track selector buttons
     juce::Label titleLabel;
     juce::Label subTitleLabel;
     std::array<juce::TextButton, AlgorithmicRhythm::kMaxLanes> trackSelectButtons;
     int currentTrackIndex { 0 };
+
+    // Audition transport and generator buttons
+    juce::TextButton playButton;
+    juce::TextButton randomizeButton;
+
+    // Vector track activation matrix (top right)
+    TrackVectorMatrixComponent trackVectorMatrix;
 
     // Global controls
     juce::Slider globalMutationSlider;

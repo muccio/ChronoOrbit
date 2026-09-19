@@ -218,42 +218,48 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
     readLaneParameters (lanes);
 
     auto* playHead = getPlayHead();
-    if (playHead == nullptr)
+    bool hostIsPlaying = false;
+    double bpm = 120.0;
+    double ppqPos = 0.0;
+    int64_t currentBlockStartSample = sampleCounter;
+
+    if (playHead != nullptr)
     {
-        rhythmEngine.updateOfflineTelemetry (lanes);
-        if (wasPlaying)
+        if (auto posOpt = playHead->getPosition())
         {
-            stopAllActiveNotes (midiMessages, 0);
-            wasPlaying = false;
+            hostIsPlaying = posOpt->getIsPlaying();
+            bpm = posOpt->getBpm().orFallback (120.0);
+            if (hostIsPlaying)
+            {
+                ppqPos = posOpt->getPpqPosition().orFallback (0.0);
+                currentBlockStartSample = posOpt->getTimeInSamples().orFallback (sampleCounter);
+            }
         }
-        return;
     }
 
-    auto posOpt = playHead->getPosition();
-    if (!posOpt.hasValue())
+    const bool internalActive = internalPlaybackActive.load (std::memory_order_relaxed);
+    const bool isPlaying = hostIsPlaying || internalActive;
+
+    const double currentSampleRate = getSampleRate() > 1000.0 ? getSampleRate() : 44100.0;
+    const double ppqDelta = (static_cast<double> (numSamples) * bpm) / (60.0 * currentSampleRate);
+
+    if (!hostIsPlaying && internalActive)
     {
-        rhythmEngine.updateOfflineTelemetry (lanes);
-        if (wasPlaying)
-        {
-            stopAllActiveNotes (midiMessages, 0);
-            wasPlaying = false;
-        }
-        return;
+        ppqPos = internalPpqPosition;
+        internalPpqPosition = std::fmod (internalPpqPosition + ppqDelta, 64.0);
+        currentBlockStartSample = sampleCounter;
     }
 
-    const auto& pos = *posOpt;
-    const bool isPlaying = pos.getIsPlaying();
-    const double bpm = pos.getBpm().orFallback (120.0);
-    const double ppqPos = pos.getPpqPosition().orFallback (0.0);
-    const int64_t currentBlockStartSample = pos.getTimeInSamples().orFallback (sampleCounter);
     sampleCounter = currentBlockStartSample + numSamples;
+    currentPpqForGui.store (ppqPos, std::memory_order_relaxed);
 
-    // Handle DAW Transport Stop
+    // Handle DAW / Internal Transport Stop
     if (wasPlaying && !isPlaying)
     {
         stopAllActiveNotes (midiMessages, 0);
         wasPlaying = false;
         lastPpqPosition = -1.0;
+        internalPpqPosition = 0.0;
         rhythmEngine.reset();
         rhythmEngine.updateOfflineTelemetry (lanes);
         return;
@@ -265,7 +271,7 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         return;
     }
 
-    // Handle DAW Transport Loop jump or reverse seek
+    // Handle Transport Loop jump or reverse seek
     if (isPlaying && lastPpqPosition >= 0.0)
     {
         if (ppqPos < lastPpqPosition || (ppqPos - lastPpqPosition) > 2.0)
@@ -302,8 +308,6 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
         return;
 
     // 2. Calculate PPQ window for this audio block
-    const double currentSampleRate = getSampleRate() > 1000.0 ? getSampleRate() : 44100.0;
-    const double ppqDelta = (static_cast<double> (numSamples) * bpm) / (60.0 * currentSampleRate);
     const double ppqStart = ppqPos;
     const double ppqEnd   = ppqPos + ppqDelta;
 
@@ -611,6 +615,200 @@ uint32_t MidiRythmGenProcessor::getLanePattern (int laneIdx) const
     if (laneIdx < 0 || laneIdx >= AlgorithmicRhythm::kMaxLanes)
         return 0;
     return rhythmEngine.getTelemetry (laneIdx).activePatternMask.load (std::memory_order_relaxed);
+}
+
+void MidiRythmGenProcessor::setInternalPlayback (bool play) noexcept
+{
+    internalPlaybackActive.store (play, std::memory_order_relaxed);
+    if (!play)
+    {
+        internalPpqPosition = 0.0;
+    }
+}
+
+void MidiRythmGenProcessor::randomizeWholeTonePattern()
+{
+    juce::Random rng (juce::Time::currentTimeMillis());
+
+    // Step lengths suited for polymetric interplay
+    static const int musicalSteps[] = { 16, 12, 8, 14, 16, 10, 24, 18, 15, 7, 11 };
+    const int numStepOptions = static_cast<int> (sizeof (musicalSteps) / sizeof (musicalSteps[0]));
+
+    for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
+    {
+        // 1. Root Note: Starts from Middle C (60) and ascends by whole tones (+2 semitones per track)
+        const int wholeToneNote = 60 + i * 2; // 60, 62, 64, 66, 68, 70, 72, 74
+
+        // 2. Polymetric step size and algorithm
+        const int chosenSteps = musicalSteps[rng.nextInt (numStepOptions)];
+        const int chosenAlgo  = (rng.nextFloat() < 0.70f) ? 0 : ((rng.nextFloat() < 0.60f) ? 1 : 2); // Mostly Euclidean, then Markov/Poisson
+
+        // 3. Euclidean pulses & rotation
+        int maxPulses = std::max (1, chosenSteps - 1);
+        int chosenPulses = rng.nextInt (juce::Range<int> (std::max (1, chosenSteps / 4), std::max (2, (chosenSteps * 3) / 4)));
+        chosenPulses = std::clamp (chosenPulses, 1, maxPulses);
+        const int chosenRotation = rng.nextInt (chosenSteps);
+
+        // 4. Markov / Poisson stochastic parameters
+        const float chosenDensity = 0.35f + rng.nextFloat() * 0.45f;
+        const float chosenLambda  = 1.5f  + rng.nextFloat() * 3.0f;
+
+        // 5. Dynamics & Clock
+        const int chosenMult = (i >= 6 && rng.nextFloat() < 0.35f) ? 2 : 1;
+        const int chosenVel = rng.nextInt (juce::Range<int> (85, 118));
+        const int chosenVelRnd = rng.nextInt (juce::Range<int> (8, 22));
+        const float chosenGate = 0.45f + rng.nextFloat() * 0.50f;
+        const float chosenProb = 0.85f + rng.nextFloat() * 0.15f;
+
+        // Apply to APVTS parameters
+        if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (getParamId (i, "enabled"))))
+            *p = true; // All 8 tracks active
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "root_note"))))
+            *p = wholeToneNote;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "steps"))))
+            *p = chosenSteps;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (i, "algo"))))
+            *p = chosenAlgo;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "pulses"))))
+            *p = chosenPulses;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "rotation"))))
+            *p = chosenRotation;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "markov_density"))))
+            *p = chosenDensity;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "poisson_lambda"))))
+            *p = chosenLambda;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "clock_mult"))))
+            *p = chosenMult;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "clock_div"))))
+            *p = 1;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "velocity"))))
+            *p = chosenVel;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "velocity_rnd"))))
+            *p = chosenVelRnd;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "gate"))))
+            *p = chosenGate;
+
+        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "probability"))))
+            *p = chosenProb;
+    }
+
+    // Refresh telemetry immediately
+    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+    readLaneParameters (lanes);
+    rhythmEngine.updateOfflineTelemetry (lanes);
+}
+
+void MidiRythmGenProcessor::exportPatternToMidiFile (const juce::File& targetFile, int numBars)
+{
+    juce::MidiFile midiFile;
+    const short timeFormat = 960; // 960 ticks per quarter note
+    midiFile.setTicksPerQuarterNote (timeFormat);
+
+    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+    readLaneParameters (lanes);
+
+    // Track 0: Tempo and Time Signature
+    juce::MidiMessageSequence tempoTrack;
+    auto timeSig = juce::MidiMessage::timeSignatureMetaEvent (4, 4);
+    timeSig.setTimeStamp (0.0);
+    tempoTrack.addEvent (timeSig);
+
+    double hostBpm = 120.0;
+    if (auto* ph = getPlayHead())
+    {
+        if (auto pos = ph->getPosition())
+            hostBpm = pos->getBpm().orFallback (120.0);
+    }
+    auto tempoMsg = juce::MidiMessage::tempoMetaEvent (static_cast<int> (std::round (60000000.0 / hostBpm)));
+    tempoMsg.setTimeStamp (0.0);
+    tempoTrack.addEvent (tempoMsg);
+
+    auto endMeta = juce::MidiMessage::endOfTrack();
+    endMeta.setTimeStamp (numBars * 4.0 * timeFormat);
+    tempoTrack.addEvent (endMeta);
+    midiFile.addTrack (tempoTrack);
+
+    // Track 1: All multi-track notes
+    juce::MidiMessageSequence noteSequence;
+    const double totalPpq = numBars * 4.0;
+    const double ticksPerPpq = static_cast<double> (timeFormat);
+
+    for (int laneIdx = 0; laneIdx < AlgorithmicRhythm::kMaxLanes; ++laneIdx)
+    {
+        const auto& p = lanes[laneIdx];
+        if (!p.enabled || p.steps <= 0)
+            continue;
+
+        const int steps = std::clamp (p.steps, 1, AlgorithmicRhythm::kMaxSteps);
+        const int mult  = std::clamp (p.clockMultiplier, 1, 16);
+        const int div   = std::clamp (p.clockDivider, 1, 16);
+        const double ppqPerStep = (0.25 * static_cast<double> (div)) / static_cast<double> (mult);
+        if (ppqPerStep <= 1e-6)
+            continue;
+
+        const double loopPpqDuration = steps * ppqPerStep;
+        const uint32_t pattern = getLanePattern (laneIdx);
+        const int totalStepsInExport = static_cast<int> (std::ceil (totalPpq / ppqPerStep));
+
+        for (int s = 0; s < totalStepsInExport; ++s)
+        {
+            const int stepInPattern = s % steps;
+            const int cycle = s / steps;
+            const bool isHit = (pattern & (1U << stepInPattern)) != 0;
+            if (!isHit)
+                continue;
+
+            const float swingShift = (stepInPattern % 2 != 0) ? (p.swing * 0.5f) : 0.0f;
+            const double t0 = std::clamp (static_cast<double> (static_cast<float> (stepInPattern) + swingShift) / static_cast<double> (steps), 0.0, 0.999999);
+            const double gamma = std::pow (2.0, static_cast<double> (p.timeWarp * 1.5f));
+            const double tWarped = (std::abs (p.timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
+
+            const double noteStartPpq = (static_cast<double> (cycle) + tWarped) * loopPpqDuration;
+            if (noteStartPpq >= totalPpq)
+                continue;
+
+            const double gatePpq = ppqPerStep * std::clamp (p.gatePercent, 0.1f, 4.0f);
+            const double noteEndPpq = std::min (totalPpq, noteStartPpq + gatePpq);
+
+            const double startTick = noteStartPpq * ticksPerPpq;
+            const double endTick   = noteEndPpq * ticksPerPpq;
+
+            auto noteOn = juce::MidiMessage::noteOn (p.midiChannel, p.rootNote, static_cast<juce::uint8> (std::clamp (p.velocity, 1, 127)));
+            noteOn.setTimeStamp (startTick);
+            noteSequence.addEvent (noteOn);
+
+            auto noteOff = juce::MidiMessage::noteOff (p.midiChannel, p.rootNote, 0.0f);
+            noteOff.setTimeStamp (endTick);
+            noteSequence.addEvent (noteOff);
+        }
+    }
+
+    noteSequence.updateMatchedPairs();
+    auto endMeta2 = juce::MidiMessage::endOfTrack();
+    endMeta2.setTimeStamp (numBars * 4.0 * timeFormat);
+    noteSequence.addEvent (endMeta2);
+    midiFile.addTrack (noteSequence);
+
+    if (targetFile.existsAsFile())
+        targetFile.deleteFile();
+
+    juce::FileOutputStream outStream (targetFile);
+    if (outStream.openedOk())
+    {
+        midiFile.writeTo (outStream);
+    }
 }
 
 //==============================================================================

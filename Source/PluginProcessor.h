@@ -53,6 +53,18 @@ public:
     void toggleLaneStep (int laneIdx, int stepIdx);
     uint32_t getLanePattern (int laneIdx) const;
 
+    // Internal audition playback
+    void setInternalPlayback (bool play) noexcept;
+    bool isInternalPlaybackActive() const noexcept { return internalPlaybackActive.load (std::memory_order_relaxed); }
+    double getCurrentPpqPosition() const noexcept { return currentPpqForGui.load (std::memory_order_relaxed); }
+
+    // Whole-tone aleatoric randomizer
+    void randomizeWholeTonePattern();
+
+    // MIDI Export helper
+    void exportPatternToMidiFile (const juce::File& targetFile, int numBars = 4);
+    void readLaneParameters (AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes]);
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout();
 
     // Parameter ID helper
@@ -62,6 +74,9 @@ public:
     }
 
 private:
+    std::atomic<bool> internalPlaybackActive { false };
+    std::atomic<double> currentPpqForGui { 0.0 };
+    double internalPpqPosition { 0.0 };
     //==============================================================================
     juce::AudioProcessorValueTreeState apvts;
     AlgorithmicRhythm::RhythmEngine rhythmEngine;
@@ -114,7 +129,6 @@ private:
 
     void stopAllActiveNotes (juce::MidiBuffer& midiMessages, int sampleOffset = 0);
     void cacheParamPointers();
-    void readLaneParameters (AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes]);
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (MidiRythmGenProcessor)
 };

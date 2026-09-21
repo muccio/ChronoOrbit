@@ -83,34 +83,19 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
 
-    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float swing, float timeWarp, float totalWidth, float totalHeight) noexcept
+    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float totalWidth, float totalHeight) noexcept
     {
         if (totalSteps <= 0)
             return {};
 
         const float margin = 4.0f;
         const float usableWidth = totalWidth - margin * 2.0f;
+        const float slotWidth = usableWidth / static_cast<float> (totalSteps);
         const float gap = 2.0f;
 
-        const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
-
-        const float swingShift0 = (step % 2 != 0) ? (swing * 0.5f) : 0.0f;
-        const double t0 = std::clamp (static_cast<double> (static_cast<float> (step) + swingShift0) / static_cast<double> (totalSteps), 0.0, 0.999999);
-        const double tw0 = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
-
-        const int nextStep = step + 1;
-        double tw1 = 1.0;
-        if (nextStep < totalSteps)
-        {
-            const float swingShift1 = (nextStep % 2 != 0) ? (swing * 0.5f) : 0.0f;
-            const double t1 = std::clamp (static_cast<double> (static_cast<float> (nextStep) + swingShift1) / static_cast<double> (totalSteps), 0.0, 0.999999);
-            tw1 = (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t1, gamma), 0.0, 0.999999) : t1;
-        }
-
-        const float px = margin + static_cast<float> (tw0) * usableWidth + gap * 0.5f;
-        const float pxEnd = margin + static_cast<float> (tw1) * usableWidth - gap * 0.5f;
-        const float pw = std::max (4.0f, pxEnd - px);
+        const float px = margin + static_cast<float> (step) * slotWidth + gap * 0.5f;
         const float py = 3.0f;
+        const float pw = std::max (2.0f, slotWidth - gap);
         const float ph = totalHeight - 6.0f;
 
         return { px, py, pw, ph };

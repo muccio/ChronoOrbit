@@ -202,8 +202,6 @@ void StepStripComponent::paint (juce::Graphics& g)
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
     const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
     const int curStep = tele.currentStep.load (std::memory_order_relaxed);
-    const float swing = tele.swingValue.load (std::memory_order_relaxed);
-    const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
     const juce::Colour trackCol = OrbitVisualizerComponent::laneColours[currentTrack];
 
     const float width = static_cast<float> (getWidth());
@@ -216,7 +214,7 @@ void StepStripComponent::paint (juce::Graphics& g)
 
     for (int s = 0; s < steps; ++s)
     {
-        const auto padRect = computeStepBounds (s, steps, swing, timeWarp, width, height);
+        const auto padRect = computeStepBounds (s, steps, width, height);
         const bool isHit = (activeMask & (1U << s)) != 0;
         const bool isPlayhead = (s == curStep);
 
@@ -256,24 +254,20 @@ void StepStripComponent::mouseDown (const juce::MouseEvent& event)
 {
     const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
-    const float swing = tele.swingValue.load (std::memory_order_relaxed);
-    const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
     const float width = static_cast<float> (getWidth());
     const float height = static_cast<float> (getHeight());
+    const float margin = 4.0f;
+    const float usableWidth = width - margin * 2.0f;
 
-    for (int s = 0; s < steps; ++s)
+    if (steps > 0 && event.position.x >= margin && event.position.x <= (width - margin) && event.position.y >= 0.0f && event.position.y <= height)
     {
-        const auto padRect = computeStepBounds (s, steps, swing, timeWarp, width, height);
-        if (padRect.contains (event.position))
-        {
-            if (onStepToggled)
-                onStepToggled (currentTrack, s);
-            else
-                processor.toggleLaneStep (currentTrack, s);
+        const int s = std::clamp (static_cast<int> ((event.position.x - margin) / (usableWidth / static_cast<float> (steps))), 0, steps - 1);
+        if (onStepToggled)
+            onStepToggled (currentTrack, s);
+        else
+            processor.toggleLaneStep (currentTrack, s);
 
-            repaint();
-            break;
-        }
+        repaint();
     }
 }
 

@@ -576,32 +576,37 @@ void MidiRythmGenProcessor::toggleLaneStep (int laneIdx, int stepIdx)
     if (laneIdx < 0 || laneIdx >= AlgorithmicRhythm::kMaxLanes || stepIdx < 0 || stepIdx >= AlgorithmicRhythm::kMaxSteps)
         return;
 
+    auto* stepsParam = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "steps")));
+    const int steps = (stepsParam != nullptr) ? std::clamp (stepsParam->get(), 1, AlgorithmicRhythm::kMaxSteps) : 16;
+
+    auto* rotParam = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "rotation")));
+    const int rotation = (rotParam != nullptr) ? rotParam->get() : 0;
+    const int rot = ((rotation % steps) + steps) % steps;
+
     auto* algoParam = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (laneIdx, "algo")));
     const int currentAlgo = (algoParam != nullptr) ? algoParam->getIndex() : 0;
 
-    uint32_t currentMask = 0;
-    if (currentAlgo == 3) // Already Custom Pattern
-    {
-        currentMask = rhythmEngine.getCustomPatternMask (laneIdx);
-    }
-    else
-    {
-        // Snapshot the current active pattern mask into custom pattern
-        currentMask = rhythmEngine.getTelemetry (laneIdx).activePatternMask.load (std::memory_order_relaxed);
-        // Switch algorithm to Custom (index 3)
-        if (algoParam != nullptr)
-            *algoParam = 3;
-    }
+    // Get current active pattern mask currently heard and displayed
+    const uint32_t currentActive = rhythmEngine.getTelemetry (laneIdx).activePatternMask.load (std::memory_order_relaxed);
 
-    // Flip step bit (using pure 32-bit integer arithmetic)
-    currentMask ^= (1U << stepIdx);
+    // Toggle the exact visual step the user clicked
+    const uint32_t newActive = currentActive ^ (1U << stepIdx);
+
+    // In Custom mode, RhythmEngine applies rotatePattern(customPatternMask, steps, rot).
+    // Therefore, customPatternMask must store newActive un-rotated by rot,
+    // so that rotatePattern(customPatternMask, steps, rot) produces newActive with 100% fidelity!
+    const uint32_t newCustomMask = AlgorithmicRhythm::RhythmEngine::rotatePattern (newActive, steps, steps - rot);
 
     // Store in authoritative 32-bit engine storage
-    rhythmEngine.setCustomPatternMask (laneIdx, currentMask);
+    rhythmEngine.setCustomPatternMask (laneIdx, newCustomMask);
+
+    // Switch algorithm to Custom (index 3) if not already Custom
+    if (algoParam != nullptr && currentAlgo != 3)
+        *algoParam = 3;
 
     // Persist into APVTS state immediately so it's always ready to save
     apvts.state.setProperty ("lane_custom_mask_" + juce::String (laneIdx),
-                             static_cast<juce::int64> (currentMask),
+                             static_cast<juce::int64> (newCustomMask),
                              nullptr);
 
     // Immediately update telemetry so UI updates without lag

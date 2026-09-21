@@ -83,6 +83,9 @@ struct LaneParameters
     int pitchRandomRange { 0 };      // 0 to 24 semitones
     float mutationRate { 0.0f };     // 0.0 to 1.0 per bar mutation chance
     uint32_t customPatternMask { 0 }; // 32-bit custom edited bitmask
+    float pan { 0.0f };              // -1.0 to 1.0 (Manual base stereo position: -1=L, 0=C, +1=R)
+    float panDepth { 0.0f };         // 0.0 to 1.0 (LFO modulation depth: 0% to 100%)
+    int panRateMode { 2 };           // LFO frequency or random mode (0..13)
 };
 
 // Lock-free telemetry exported to the UI
@@ -96,6 +99,7 @@ struct LaneVisualTelemetry
     std::atomic<uint32_t> activePatternMask { 0 }; // Bitmask of active hits
     std::atomic<float> swingValue { 0.0f };        // Swing percentage [-1..1]
     std::atomic<float> timeWarpValue { 0.0f };     // Time warp percentage [-1..1]
+    std::atomic<float> currentPan { 0.5f };        // Normalized pan [0..1] for GUI stereo meter
 };
 
 // Rhythmic event emitted to the audio processor MIDI scheduler
@@ -107,6 +111,7 @@ struct ScheduledNote
     int midiNote { 36 };
     int velocity { 100 };
     int durationSamples { 2000 };    // Gate length in samples
+    int pan { 64 };                  // MIDI CC #10 value (0..127, 64 = Center)
 };
 
 // Dedicated generative engine for multi-track polymetric/polyrhythmic generation
@@ -194,6 +199,8 @@ private:
         int markovState { 0 }; // 0 = Rest, 1 = Hit, 2 = Ghost, 3 = Accent
         uint32_t cachedPattern { 0 };
         int lastBarCount { -1 };
+        float lastRandomPan { 0.0f };
+        float smoothRandomPan { 0.0f };
     };
 
     std::array<LaneState, kMaxLanes> laneStates;

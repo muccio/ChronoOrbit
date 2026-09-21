@@ -36,8 +36,6 @@ void OrbitLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wi
                                         float sliderPosProportional, float rotaryStartAngle,
                                         float rotaryEndAngle, juce::Slider& slider)
 {
-    juce::ignoreUnused (slider);
-
     const auto bounds = juce::Rectangle<int> (x, y, width, height).toFloat().reduced (4.0f);
     const float radius = juce::jmin (bounds.getWidth(), bounds.getHeight()) * 0.5f;
     const float centreX = bounds.getCentreX();
@@ -61,7 +59,22 @@ void OrbitLookAndFeel::drawRotarySlider (juce::Graphics& g, int x, int y, int wi
     g.drawEllipse (rx + 4.0f, ry + 4.0f, rw - 8.0f, rw - 8.0f, 1.0f);
 
     // Value active arc
-    if (sliderPosProportional > 0.001f)
+    const bool isBipolar = slider.getMinimum() < 0.0;
+    if (isBipolar)
+    {
+        const float midAngle = (rotaryStartAngle + rotaryEndAngle) * 0.5f;
+        if (std::abs (angle - midAngle) > 0.01f)
+        {
+            const float startA = std::min (midAngle, angle);
+            const float endA   = std::max (midAngle, angle);
+            juce::Path valueArc;
+            valueArc.addCentredArc (centreX, centreY, radius - 3.0f, radius - 3.0f,
+                                    0.0f, startA, endA, true);
+            g.setColour (juce::Colour (0xff00e5ff));
+            g.strokePath (valueArc, juce::PathStrokeType (4.0f, juce::PathStrokeType::curved, juce::PathStrokeType::rounded));
+        }
+    }
+    else if (sliderPosProportional > 0.001f)
     {
         juce::Path valueArc;
         valueArc.addCentredArc (centreX, centreY, radius - 3.0f, radius - 3.0f,
@@ -692,6 +705,92 @@ void TrackVectorMatrixComponent::resized()
 }
 
 //==============================================================================
+// StereoPanMeterComponent Implementation
+//==============================================================================
+StereoPanMeterComponent::StereoPanMeterComponent (MidiRythmGenProcessor& proc)
+    : processor (proc)
+{
+}
+
+void StereoPanMeterComponent::paint (juce::Graphics& g)
+{
+    const auto bounds = getLocalBounds().toFloat();
+    const float w = bounds.getWidth();
+    const float h = bounds.getHeight();
+
+    // Dark sleek background
+    g.setColour (juce::Colour (0xff12161f));
+    g.fillRoundedRectangle (bounds, 5.0f);
+
+    g.setColour (juce::Colour (0xff252c3a));
+    g.drawRoundedRectangle (bounds, 5.0f, 1.0f);
+
+    // Read current normalized pan [0.0..1.0]
+    const float panNorm = processor.getRhythmEngine().getTelemetry (currentTrack).currentPan.load (std::memory_order_relaxed);
+    const float bipolar = std::clamp ((panNorm - 0.5f) * 2.0f, -1.0f, 1.0f);
+
+    // Top Header: Label & Value readout
+    g.setFont (juce::Font (9.0f, juce::Font::bold));
+    g.setColour (juce::Colours::white.withAlpha (0.55f));
+    g.drawText ("STEREO PAN METER", juce::Rectangle<float> (10.0f, 4.0f, 150.0f, 12.0f), juce::Justification::centredLeft);
+
+    juce::String panText;
+    if (std::abs (bipolar) < 0.02f)
+        panText = "CENTER";
+    else if (bipolar < 0.0f)
+        panText = "L " + juce::String (juce::roundToInt (-bipolar * 100.0f)) + "%";
+    else
+        panText = "R " + juce::String (juce::roundToInt (bipolar * 100.0f)) + "%";
+
+    const auto laneCol = OrbitVisualizerComponent::laneColours[currentTrack];
+    g.setColour (laneCol);
+    g.drawText (panText, juce::Rectangle<float> (w - 100.0f, 4.0f, 90.0f, 12.0f), juce::Justification::centredRight);
+
+    // Slider track line
+    const float trackL = 26.0f;
+    const float trackR = w - 26.0f;
+    const float trackW = trackR - trackL;
+    const float trackY = h * 0.64f;
+    const float midX = (trackL + trackR) * 0.5f;
+
+    // Background track groove
+    g.setColour (juce::Colour (0xff1e2533));
+    g.drawLine (trackL, trackY, trackR, trackY, 4.0f);
+
+    // Center notch
+    g.setColour (juce::Colour (0xff475369));
+    g.drawVerticalLine (static_cast<int> (midX), trackY - 5.0f, trackY + 5.0f);
+
+    // Quarter notches
+    g.setColour (juce::Colour (0xff2b3445));
+    g.drawVerticalLine (static_cast<int> (trackL + trackW * 0.25f), trackY - 3.0f, trackY + 3.0f);
+    g.drawVerticalLine (static_cast<int> (trackL + trackW * 0.75f), trackY - 3.0f, trackY + 3.0f);
+
+    // Dynamic active beam from center to pan position
+    const float dotX = std::clamp (trackL + panNorm * trackW, trackL, trackR);
+    if (std::abs (dotX - midX) > 1.0f)
+    {
+        g.setColour (laneCol.withAlpha (0.55f));
+        g.drawLine (midX, trackY, dotX, trackY, 4.0f);
+    }
+
+    // Glowing position needle / orb
+    g.setColour (laneCol.withAlpha (0.28f));
+    g.fillEllipse (dotX - 7.0f, trackY - 7.0f, 14.0f, 14.0f);
+
+    g.setColour (juce::Colours::white);
+    g.fillEllipse (dotX - 3.5f, trackY - 3.5f, 7.0f, 7.0f);
+
+    // "L" and "R" labels
+    g.setFont (juce::Font (9.0f, juce::Font::bold));
+    g.setColour (bipolar < -0.1f ? laneCol : juce::Colours::white.withAlpha (0.4f));
+    g.drawText ("L", juce::Rectangle<float> (6.0f, trackY - 6.0f, 16.0f, 12.0f), juce::Justification::centred);
+
+    g.setColour (bipolar > 0.1f ? laneCol : juce::Colours::white.withAlpha (0.4f));
+    g.drawText ("R", juce::Rectangle<float> (w - 22.0f, trackY - 6.0f, 16.0f, 12.0f), juce::Justification::centred);
+}
+
+//==============================================================================
 // Main Editor Implementation
 //==============================================================================
 MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
@@ -700,6 +799,7 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
       orbitVisualizer (p),
       dawMidiClip (p),
       trackVectorMatrix (p),
+      stereoPanMeter (p),
       stepStrip (p)
 {
     setLookAndFeel (&customLookAndFeel);
@@ -801,6 +901,20 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     setupKnob (velocitySlider, velocityLabel, "VELOCITY", "");
     setupKnob (velocityRndSlider, velocityRndLabel, "VEL RND", "");
     setupKnob (gateSlider, gateLabel, "GATE", "x");
+    setupKnob (panSlider, panLabel, "PAN", "%");
+    setupKnob (panDepthSlider, panDepthLabel, "PAN DEPTH", "%");
+
+    panRateLabel.setText ("PAN LFO / MODE", juce::dontSendNotification);
+    panRateLabel.setFont (juce::Font (9.0f, juce::Font::bold));
+    panRateLabel.setColour (juce::Label::textColourId, juce::Colours::white.withAlpha (0.5f));
+    addAndMakeVisible (panRateLabel);
+
+    panRateComboBox.addItemList ({ "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars", "8 Bars",
+                                   "0.5 Hz", "1.0 Hz", "2.0 Hz", "4.0 Hz",
+                                   "Random (Step S&H)", "Random (Smooth Walk)" }, 1);
+    addAndMakeVisible (panRateComboBox);
+
+    addAndMakeVisible (stereoPanMeter);
 
     // Step sequencer strip setup
     stepStripLabel.setText ("STEP SEQUENCER (CLICK PAD OR DOUBLE-CLICK ORBIT NODE)", juce::dontSendNotification);
@@ -865,6 +979,7 @@ void MidiRythmGenEditor::selectTrack (int trackIndex)
 
     orbitVisualizer.setSelectedLane (currentTrackIndex);
     stepStrip.setTrack (currentTrackIndex);
+    stereoPanMeter.setTrack (currentTrackIndex);
     bindTrackAttachments (currentTrackIndex);
 }
 
@@ -886,6 +1001,9 @@ void MidiRythmGenEditor::bindTrackAttachments (int trackIndex)
     velocityAttach.reset();
     velocityRndAttach.reset();
     gateAttach.reset();
+    panAttach.reset();
+    panDepthAttach.reset();
+    panRateAttach.reset();
 
     auto& apvts = audioProcessor.getAPVTS();
 
@@ -933,6 +1051,15 @@ void MidiRythmGenEditor::bindTrackAttachments (int trackIndex)
 
     gateAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
         apvts, MidiRythmGenProcessor::getParamId (trackIndex, "gate"), gateSlider);
+
+    panAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        apvts, MidiRythmGenProcessor::getParamId (trackIndex, "pan"), panSlider);
+
+    panDepthAttach = std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (
+        apvts, MidiRythmGenProcessor::getParamId (trackIndex, "pan_depth"), panDepthSlider);
+
+    panRateAttach = std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (
+        apvts, MidiRythmGenProcessor::getParamId (trackIndex, "pan_rate"), panRateComboBox);
 }
 
 void MidiRythmGenEditor::timerCallback()
@@ -940,6 +1067,7 @@ void MidiRythmGenEditor::timerCallback()
     orbitVisualizer.updateAnimation();
     orbitVisualizer.repaint();
     stepStrip.repaint();
+    stereoPanMeter.repaint();
     dawMidiClip.repaint();
     trackVectorMatrix.updateVisuals();
 
@@ -1041,18 +1169,30 @@ void MidiRythmGenEditor::resized()
     velocityRndLabel.setBounds (535 + 4 * kSpacing, kY2, kW, 14);
     velocityRndSlider.setBounds (535 + 4 * kSpacing, kY2 + 14, kW, kH);
 
-    // Row 3: Root, Time Warp, Pitch Rnd
+    // Row 3: Root, Pitch Rnd, Time Warp, Pan, Pan Depth
     int kY3 = 384;
     rootNoteLabel.setBounds (535 + 0 * kSpacing, kY3, kW, 14);
     rootNoteSlider.setBounds (535 + 0 * kSpacing, kY3 + 14, kW, kH);
 
+    pitchRndLabel.setBounds (535 + 1 * kSpacing, kY3, kW, 14);
+    pitchRndSlider.setBounds (535 + 1 * kSpacing, kY3 + 14, kW, kH);
+
     timeWarpLabel.setBounds (535 + 2 * kSpacing, kY3, kW, 14);
     timeWarpSlider.setBounds (535 + 2 * kSpacing, kY3 + 14, kW, kH);
 
-    pitchRndLabel.setBounds (535 + 4 * kSpacing, kY3, kW, 14);
-    pitchRndSlider.setBounds (535 + 4 * kSpacing, kY3 + 14, kW, kH);
+    panLabel.setBounds (535 + 3 * kSpacing, kY3, kW, 14);
+    panSlider.setBounds (535 + 3 * kSpacing, kY3 + 14, kW, kH);
+
+    panDepthLabel.setBounds (535 + 4 * kSpacing, kY3, kW, 14);
+    panDepthSlider.setBounds (535 + 4 * kSpacing, kY3 + 14, kW, kH);
 
     // Row 4: Step Sequencer Strip
     stepStripLabel.setBounds (535, 484, 400, 14);
     stepStrip.setBounds (535, 502, 400, 42);
+
+    // Row 5: Auto-Pan LFO Rate / Mode & Stereo Pan Meter
+    panRateLabel.setBounds (535, 552, 140, 14);
+    panRateComboBox.setBounds (535, 568, 200, 24);
+
+    stereoPanMeter.setBounds (535, 598, 400, 46);
 }

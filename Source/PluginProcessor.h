@@ -103,6 +103,9 @@ private:
         std::atomic<float>* timeWarp { nullptr };
         std::atomic<float>* pitchRnd { nullptr };
         std::atomic<float>* customMask { nullptr };
+        std::atomic<float>* pan { nullptr };
+        std::atomic<float>* panDepth { nullptr };
+        std::atomic<float>* panRate { nullptr };
     };
 
     std::array<CachedLaneParams, AlgorithmicRhythm::kMaxLanes> cachedLaneParams;

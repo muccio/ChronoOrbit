@@ -143,6 +143,9 @@ void MidiRythmGenProcessor::cacheParamPointers()
         cp.timeWarp       = apvts.getRawParameterValue (getParamId (i, "time_warp"));
         cp.pitchRnd       = apvts.getRawParameterValue (getParamId (i, "pitch_rnd"));
         cp.customMask     = apvts.getRawParameterValue (getParamId (i, "custom_mask"));
+        cp.pan            = apvts.getRawParameterValue (getParamId (i, "pan"));
+        cp.panDepth       = apvts.getRawParameterValue (getParamId (i, "pan_depth"));
+        cp.panRate        = apvts.getRawParameterValue (getParamId (i, "pan_rate"));
     }
 }
 
@@ -178,6 +181,9 @@ void MidiRythmGenProcessor::readLaneParameters (AlgorithmicRhythm::LaneParameter
         p.pitchRandomRange   = (cp.pitchRnd != nullptr) ? static_cast<int> (cp.pitchRnd->load (std::memory_order_relaxed)) : 0;
         p.mutationRate       = globalMut;
         p.customPatternMask  = rhythmEngine.getCustomPatternMask (i);
+        p.pan                = (cp.pan != nullptr) ? cp.pan->load (std::memory_order_relaxed) : 0.0f;
+        p.panDepth           = (cp.panDepth != nullptr) ? cp.panDepth->load (std::memory_order_relaxed) : 0.0f;
+        p.panRateMode        = (cp.panRate != nullptr) ? static_cast<int> (cp.panRate->load (std::memory_order_relaxed)) : 2;
     }
 }
 
@@ -341,6 +347,12 @@ void MidiRythmGenProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce
                 ++it;
             }
         }
+
+        // Add MIDI CC #10 Pan event immediately before Note-On
+        midiMessages.addEvent (juce::MidiMessage::controllerEvent (note.midiChannel,
+                                                                   10,
+                                                                   note.pan),
+                               noteSampleOffset);
 
         // Add Note-On event
         midiMessages.addEvent (juce::MidiMessage::noteOn (note.midiChannel,
@@ -566,6 +578,29 @@ juce::AudioProcessorValueTreeState::ParameterLayout MidiRythmGenProcessor::creat
             std::numeric_limits<int>::min(),
             std::numeric_limits<int>::max(),
             0));
+
+        params.push_back (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID (prefix + "pan", 1),
+            namePrefix + "Pan",
+            juce::NormalisableRange<float> (-1.0f, 1.0f, 0.01f), 0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        params.push_back (std::make_unique<juce::AudioParameterFloat> (
+            juce::ParameterID (prefix + "pan_depth", 1),
+            namePrefix + "Pan Depth",
+            juce::NormalisableRange<float> (0.0f, 1.0f, 0.01f), 0.0f,
+            juce::AudioParameterFloatAttributes().withLabel ("%")));
+
+        juce::StringArray panRateChoices = {
+            "1/16", "1/8", "1/4", "1/2", "1 Bar", "2 Bars", "4 Bars", "8 Bars",
+            "0.5 Hz", "1.0 Hz", "2.0 Hz", "4.0 Hz",
+            "Random (Step S&H)", "Random (Smooth Walk)"
+        };
+
+        params.push_back (std::make_unique<juce::AudioParameterChoice> (
+            juce::ParameterID (prefix + "pan_rate", 1),
+            namePrefix + "Pan Rate / Mode",
+            panRateChoices, 2));
     }
 
     return { params.begin(), params.end() };
@@ -789,6 +824,37 @@ void MidiRythmGenProcessor::exportPatternToMidiFile (const juce::File& targetFil
 
             const double startTick = noteStartPpq * ticksPerPpq;
             const double endTick   = noteEndPpq * ticksPerPpq;
+
+            float noteLfo = 0.0f;
+            if (p.panRateMode <= 7)
+            {
+                static constexpr double kPpqDivs[] = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0 };
+                const double cyclePpq = kPpqDivs[p.panRateMode];
+                double phase = std::fmod (noteStartPpq / cyclePpq, 1.0);
+                if (phase < 0.0) phase += 1.0;
+                noteLfo = std::sin (static_cast<float> (phase * 6.283185307179586));
+            }
+            else if (p.panRateMode >= 8 && p.panRateMode <= 11)
+            {
+                static constexpr float kFreqs[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+                const float f = kFreqs[p.panRateMode - 8];
+                const double timeSec = (noteStartPpq / hostBpm) * 60.0;
+                double phase = std::fmod (timeSec * static_cast<double> (f), 1.0);
+                if (phase < 0.0) phase += 1.0;
+                noteLfo = std::sin (static_cast<float> (phase * 6.283185307179586));
+            }
+            else
+            {
+                const float r = std::sin (static_cast<float> (s * 12.9898 + laneIdx * 78.233)) * 43758.5453f;
+                noteLfo = (r - std::floor (r)) * 2.0f - 1.0f;
+            }
+
+            const float bipolarPan = std::clamp (p.pan + noteLfo * p.panDepth, -1.0f, 1.0f);
+            const int midiPan = std::clamp (static_cast<int> (std::round ((bipolarPan + 1.0f) * 63.5f)), 0, 127);
+
+            auto panMsg = juce::MidiMessage::controllerEvent (p.midiChannel, 10, midiPan);
+            panMsg.setTimeStamp (startTick);
+            noteSequence.addEvent (panMsg);
 
             auto noteOn = juce::MidiMessage::noteOn (p.midiChannel, p.rootNote, static_cast<juce::uint8> (std::clamp (p.velocity, 1, 127)));
             noteOn.setTimeStamp (startTick);

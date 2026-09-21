@@ -28,11 +28,14 @@ void RhythmEngine::reset()
         laneStates[i].lastStepIndex = -1;
         laneStates[i].markovState = 0;
         laneStates[i].lastBarCount = -1;
+        laneStates[i].lastRandomPan = 0.0f;
+        laneStates[i].smoothRandomPan = 0.0f;
 
         telemetry[i].currentStep.store(0, std::memory_order_relaxed);
         telemetry[i].playheadNorm.store(0.0f, std::memory_order_relaxed);
         telemetry[i].justTriggered.store(false, std::memory_order_relaxed);
         telemetry[i].lastVelocity.store(0, std::memory_order_relaxed);
+        telemetry[i].currentPan.store(0.5f, std::memory_order_relaxed);
         // Note: activePatternMask and customPatternMasks are persistent configuration data
         // and must NOT be cleared on playback stop.
     }
@@ -201,6 +204,8 @@ void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes])
             }
         }
         tele.activePatternMask.store(activePattern, std::memory_order_relaxed);
+        const float basePan = std::clamp(params.pan, -1.0f, 1.0f);
+        tele.currentPan.store((basePan + 1.0f) * 0.5f, std::memory_order_relaxed);
     }
 }
 
@@ -239,6 +244,44 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         tele.totalSteps.store(steps, std::memory_order_relaxed);
         tele.swingValue.store(params.swing, std::memory_order_relaxed);
         tele.timeWarpValue.store(params.timeWarp, std::memory_order_relaxed);
+
+        // Continuous LFO calculation for live telemetry and base modulation
+        float blockLfo = 0.0f;
+        switch (params.panRateMode)
+        {
+            case 0: case 1: case 2: case 3: case 4: case 5: case 6: case 7:
+            {
+                static constexpr double kPpqDivs[] = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0 };
+                const double cyclePpq = kPpqDivs[params.panRateMode];
+                double phase = std::fmod(ppqStart / cyclePpq, 1.0);
+                if (phase < 0.0) phase += 1.0;
+                blockLfo = std::sin(static_cast<float>(phase * 6.283185307179586));
+                break;
+            }
+            case 8: case 9: case 10: case 11:
+            {
+                static constexpr float kFreqs[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+                const float f = kFreqs[params.panRateMode - 8];
+                const double timeSec = (ppqStart / bpm) * 60.0;
+                double phase = std::fmod(timeSec * static_cast<double>(f), 1.0);
+                if (phase < 0.0) phase += 1.0;
+                blockLfo = std::sin(static_cast<float>(phase * 6.283185307179586));
+                break;
+            }
+            case 12: // Random (Step S&H)
+            {
+                blockLfo = state.lastRandomPan;
+                break;
+            }
+            case 13: // Random (Smooth Walk)
+            {
+                state.smoothRandomPan += (state.lastRandomPan - state.smoothRandomPan) * 0.04f;
+                blockLfo = state.smoothRandomPan;
+                break;
+            }
+            default:
+                break;
+        }
 
         // Polyrhythm clock ratio: step size in quarter notes
         // Base is 16th note (0.25 ppq)
@@ -325,7 +368,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
 
             // Swing microtiming
             const float swingShift = (stepInPattern % 2 != 0) ? (params.swing * 0.5f) : 0.0f;
-            const double t0 = std::clamp(static_cast<double>(stepInPattern + swingShift) / static_cast<double>(steps), 0.0, 0.999999);
+            const double t0 = std::clamp((static_cast<double>(stepInPattern) + static_cast<double>(swingShift)) / static_cast<double>(steps), 0.0, 0.999999);
 
             // Time warp geometric non-linear curve: tau(t) = t0^gamma
             const double gamma = std::pow(2.0, static_cast<double>(params.timeWarp * 1.5f));
@@ -404,6 +447,39 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
                     }
                     const int durationSamples = std::max(64, static_cast<int>(effectiveGateRatio * stepSamples));
 
+                    // Determine pan for this note
+                    float noteLfo = blockLfo;
+                    if (params.panRateMode <= 7)
+                    {
+                        static constexpr double kPpqDivs[] = { 0.25, 0.5, 1.0, 2.0, 4.0, 8.0, 16.0, 32.0 };
+                        const double cyclePpq = kPpqDivs[params.panRateMode];
+                        double phase = std::fmod(effectiveStepPpq / cyclePpq, 1.0);
+                        if (phase < 0.0) phase += 1.0;
+                        noteLfo = std::sin(static_cast<float>(phase * 6.283185307179586));
+                    }
+                    else if (params.panRateMode >= 8 && params.panRateMode <= 11)
+                    {
+                        static constexpr float kFreqs[] = { 0.5f, 1.0f, 2.0f, 4.0f };
+                        const float f = kFreqs[params.panRateMode - 8];
+                        const double timeSec = (effectiveStepPpq / bpm) * 60.0;
+                        double phase = std::fmod(timeSec * static_cast<double>(f), 1.0);
+                        if (phase < 0.0) phase += 1.0;
+                        noteLfo = std::sin(static_cast<float>(phase * 6.283185307179586));
+                    }
+                    else if (params.panRateMode == 12)
+                    {
+                        state.lastRandomPan = rng.nextBipolar();
+                        noteLfo = state.lastRandomPan;
+                    }
+                    else if (params.panRateMode == 13)
+                    {
+                        state.lastRandomPan = rng.nextBipolar();
+                        noteLfo = state.smoothRandomPan;
+                    }
+
+                    const float bipolarPan = std::clamp(params.pan + noteLfo * params.panDepth, -1.0f, 1.0f);
+                    const int midiPan = std::clamp(static_cast<int>(std::round((bipolarPan + 1.0f) * 63.5f)), 0, 127);
+
                     // Schedule note
                     ScheduledNote note;
                     note.laneIndex = laneIdx;
@@ -412,6 +488,7 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
                     note.midiNote = midiNote;
                     note.velocity = currentVelocity;
                     note.durationSamples = durationSamples;
+                    note.pan = midiPan;
                     outScheduledNotes.push_back(note);
 
                     // Telemetry update
@@ -427,6 +504,10 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         double normPhase = std::fmod(ppqStart, loopPpqDuration);
         if (normPhase < 0.0) normPhase += loopPpqDuration;
         tele.playheadNorm.store(static_cast<float>(normPhase / loopPpqDuration), std::memory_order_relaxed);
+
+        // Update real-time continuous pan position for GUI stereo meter
+        const float activeTelemetryPan = std::clamp(params.pan + blockLfo * params.panDepth, -1.0f, 1.0f);
+        tele.currentPan.store((activeTelemetryPan + 1.0f) * 0.5f, std::memory_order_relaxed);
     }
 }
 

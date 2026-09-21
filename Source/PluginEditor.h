@@ -163,6 +163,25 @@ private:
 };
 
 //==============================================================================
+// Animated Stereo Pan Meter Component
+//==============================================================================
+class StereoPanMeterComponent : public juce::Component
+{
+public:
+    explicit StereoPanMeterComponent (MidiRythmGenProcessor& proc);
+    ~StereoPanMeterComponent() override = default;
+
+    void paint (juce::Graphics& g) override;
+    void setTrack (int trackIndex) { currentTrack = trackIndex; repaint(); }
+
+private:
+    MidiRythmGenProcessor& processor;
+    int currentTrack { 0 };
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (StereoPanMeterComponent)
+};
+
+//==============================================================================
 // Main Editor
 //==============================================================================
 class MidiRythmGenEditor : public juce::AudioProcessorEditor,
@@ -248,6 +267,16 @@ private:
     juce::Slider gateSlider;
     juce::Label  gateLabel;
 
+    juce::Slider panSlider;
+    juce::Label  panLabel;
+    juce::Slider panDepthSlider;
+    juce::Label  panDepthLabel;
+
+    juce::Label    panRateLabel;
+    juce::ComboBox panRateComboBox;
+
+    StereoPanMeterComponent stereoPanMeter;
+
     // Interactive step strip
     juce::Label stepStripLabel;
     StepStripComponent stepStrip;
@@ -268,6 +297,9 @@ private:
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> velocityAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> velocityRndAttach;
     std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> gateAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> panAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment> panDepthAttach;
+    std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment> panRateAttach;
 
     void selectTrack (int trackIndex);
     void bindTrackAttachments (int trackIndex);

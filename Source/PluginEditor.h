@@ -215,6 +215,7 @@ private:
     // Audition transport and generator buttons
     juce::TextButton playButton;
     juce::TextButton randomizeButton;
+    juce::TextButton randomizeTrackButton;
 
     // Vector track activation matrix (top right)
     TrackVectorMatrixComponent trackVectorMatrix;

@@ -828,19 +828,37 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     };
     addAndMakeVisible (playButton);
 
-    // Whole-tone aleatoric randomizer button
-    randomizeButton.setButtonText ("🎲 RANDOM");
+    // Whole-tone aleatoric randomizer buttons
+    randomizeButton.setButtonText ("🎲 RND ALL");
     randomizeButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff251733));
     randomizeButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffff00aa));
+    randomizeButton.setTooltip ("Randomize all 8 tracks with polymetric and whole-tone variations");
     randomizeButton.onClick = [this] {
         audioProcessor.randomizeWholeTonePattern();
         selectTrack (currentTrackIndex);
         orbitVisualizer.repaint();
         stepStrip.repaint();
+        stereoPanMeter.repaint();
         dawMidiClip.repaint();
         trackVectorMatrix.updateVisuals();
     };
     addAndMakeVisible (randomizeButton);
+
+    // Per-track aleatoric randomizer button
+    randomizeTrackButton.setButtonText ("🎲 RND T1");
+    randomizeTrackButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff251733));
+    randomizeTrackButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffff00aa));
+    randomizeTrackButton.setTooltip ("Randomize pattern, algorithm, and parameters for the selected track");
+    randomizeTrackButton.onClick = [this] {
+        audioProcessor.randomizeLane (currentTrackIndex);
+        selectTrack (currentTrackIndex);
+        orbitVisualizer.repaint();
+        stepStrip.repaint();
+        stereoPanMeter.repaint();
+        dawMidiClip.repaint();
+        trackVectorMatrix.updateVisuals();
+    };
+    addAndMakeVisible (randomizeTrackButton);
 
     // Track enable vector matrix (top right)
     addAndMakeVisible (trackVectorMatrix);
@@ -980,6 +998,8 @@ void MidiRythmGenEditor::selectTrack (int trackIndex)
     orbitVisualizer.setSelectedLane (currentTrackIndex);
     stepStrip.setTrack (currentTrackIndex);
     stereoPanMeter.setTrack (currentTrackIndex);
+    randomizeTrackButton.setButtonText ("🎲 RND T" + juce::String (currentTrackIndex + 1));
+    randomizeTrackButton.setTooltip ("Randomize pattern, algorithm, and parameters for Track " + juce::String (currentTrackIndex + 1));
     bindTrackAttachments (currentTrackIndex);
 }
 
@@ -1090,7 +1110,7 @@ void MidiRythmGenEditor::paint (juce::Graphics& g)
     g.setFont (juce::Font (12.0f, juce::Font::bold));
     g.setColour (OrbitVisualizerComponent::laneColours[currentTrackIndex]);
     g.drawText ("TRACK " + juce::String (currentTrackIndex + 1) + " CONFIGURATION",
-                540, 70, 300, 20, juce::Justification::left);
+                540, 70, 270, 20, juce::Justification::left);
 }
 
 void MidiRythmGenEditor::resized()
@@ -1121,6 +1141,8 @@ void MidiRythmGenEditor::resized()
     dawMidiClip.setBounds (15, 464, 490, 182);
 
     // Right Column: Track controls
+    randomizeTrackButton.setBounds (825, 68, 110, 24);
+
     const int tabWidth = 46;
     for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
     {

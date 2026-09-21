@@ -60,6 +60,7 @@ public:
 
     // Whole-tone aleatoric randomizer
     void randomizeWholeTonePattern();
+    void randomizeLane (int laneIdx);
 
     // MIDI Export helper
     void exportPatternToMidiFile (const juce::File& targetFile, int numBars = 4);

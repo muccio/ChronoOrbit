@@ -666,88 +666,110 @@ void MidiRythmGenProcessor::setInternalPlayback (bool play) noexcept
     }
 }
 
-void MidiRythmGenProcessor::randomizeWholeTonePattern()
+void MidiRythmGenProcessor::randomizeLane (int laneIdx)
 {
-    juce::Random rng (juce::Time::currentTimeMillis());
+    if (laneIdx < 0 || laneIdx >= AlgorithmicRhythm::kMaxLanes)
+        return;
+
+    juce::Random rng (juce::Time::currentTimeMillis() + laneIdx * 997);
 
     // Step lengths suited for polymetric interplay
     static const int musicalSteps[] = { 16, 12, 8, 14, 16, 10, 24, 18, 15, 7, 11 };
     const int numStepOptions = static_cast<int> (sizeof (musicalSteps) / sizeof (musicalSteps[0]));
 
-    for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
-    {
-        // 1. Root Note: Starts from Middle C (60) and ascends by whole tones (+2 semitones per track)
-        const int wholeToneNote = 60 + i * 2; // 60, 62, 64, 66, 68, 70, 72, 74
+    // 1. Root Note: Starts from Middle C (60) and ascends by whole tones (+2 semitones per track)
+    const int wholeToneNote = 60 + laneIdx * 2; // 60, 62, 64, 66, 68, 70, 72, 74
 
-        // 2. Polymetric step size and algorithm
-        const int chosenSteps = musicalSteps[rng.nextInt (numStepOptions)];
-        const int chosenAlgo  = (rng.nextFloat() < 0.70f) ? 0 : ((rng.nextFloat() < 0.60f) ? 1 : 2); // Mostly Euclidean, then Markov/Poisson
+    // 2. Polymetric step size and algorithm
+    const int chosenSteps = musicalSteps[rng.nextInt (numStepOptions)];
+    const int chosenAlgo  = (rng.nextFloat() < 0.70f) ? 0 : ((rng.nextFloat() < 0.60f) ? 1 : 2); // Mostly Euclidean, then Markov/Poisson
 
-        // 3. Euclidean pulses & rotation
-        int maxPulses = std::max (1, chosenSteps - 1);
-        int chosenPulses = rng.nextInt (juce::Range<int> (std::max (1, chosenSteps / 4), std::max (2, (chosenSteps * 3) / 4)));
-        chosenPulses = std::clamp (chosenPulses, 1, maxPulses);
-        const int chosenRotation = rng.nextInt (chosenSteps);
+    // 3. Euclidean pulses & rotation
+    const int maxPulses = std::max (1, chosenSteps - 1);
+    int chosenPulses = rng.nextInt (juce::Range<int> (std::max (1, chosenSteps / 4), std::max (2, (chosenSteps * 3) / 4)));
+    chosenPulses = std::clamp (chosenPulses, 1, maxPulses);
+    const int chosenRotation = rng.nextInt (chosenSteps);
 
-        // 4. Markov / Poisson stochastic parameters
-        const float chosenDensity = 0.35f + rng.nextFloat() * 0.45f;
-        const float chosenLambda  = 1.5f  + rng.nextFloat() * 3.0f;
+    // 4. Markov / Poisson stochastic parameters
+    const float chosenDensity = 0.35f + rng.nextFloat() * 0.45f;
+    const float chosenLambda  = 1.5f  + rng.nextFloat() * 3.0f;
 
-        // 5. Dynamics & Clock
-        const int chosenMult = (i >= 6 && rng.nextFloat() < 0.35f) ? 2 : 1;
-        const int chosenVel = rng.nextInt (juce::Range<int> (85, 118));
-        const int chosenVelRnd = rng.nextInt (juce::Range<int> (8, 22));
-        const float chosenGate = 0.45f + rng.nextFloat() * 0.50f;
-        const float chosenProb = 0.85f + rng.nextFloat() * 0.15f;
+    // 5. Dynamics & Clock
+    const int chosenMult = (laneIdx >= 6 && rng.nextFloat() < 0.35f) ? 2 : 1;
+    const int chosenVel = rng.nextInt (juce::Range<int> (85, 118));
+    const int chosenVelRnd = rng.nextInt (juce::Range<int> (8, 22));
+    const float chosenGate = 0.45f + rng.nextFloat() * 0.50f;
+    const float chosenProb = 0.85f + rng.nextFloat() * 0.15f;
 
-        // Apply to APVTS parameters
-        if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (getParamId (i, "enabled"))))
-            *p = true; // All 8 tracks active
+    // 6. Spatial Pan & Depth
+    const float chosenPan = rng.nextFloat() * 1.6f - 0.8f;
+    const float chosenPanDepth = (rng.nextFloat() < 0.65f) ? (0.2f + rng.nextFloat() * 0.6f) : 0.0f;
+    const int chosenPanRate = rng.nextInt (14);
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "root_note"))))
-            *p = wholeToneNote;
+    // Apply to APVTS parameters
+    if (auto* p = dynamic_cast<juce::AudioParameterBool*> (apvts.getParameter (getParamId (laneIdx, "enabled"))))
+        *p = true;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "steps"))))
-            *p = chosenSteps;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "root_note"))))
+        *p = wholeToneNote;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (i, "algo"))))
-            *p = chosenAlgo;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "steps"))))
+        *p = chosenSteps;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "pulses"))))
-            *p = chosenPulses;
+    if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (laneIdx, "algo"))))
+        *p = chosenAlgo;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "rotation"))))
-            *p = chosenRotation;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "pulses"))))
+        *p = chosenPulses;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "markov_density"))))
-            *p = chosenDensity;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "rotation"))))
+        *p = chosenRotation;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "poisson_lambda"))))
-            *p = chosenLambda;
+    if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (laneIdx, "markov_density"))))
+        *p = chosenDensity;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "clock_mult"))))
-            *p = chosenMult;
+    if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (laneIdx, "poisson_lambda"))))
+        *p = chosenLambda;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "clock_div"))))
-            *p = 1;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "clock_mult"))))
+        *p = chosenMult;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "velocity"))))
-            *p = chosenVel;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "clock_div"))))
+        *p = 1;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (i, "velocity_rnd"))))
-            *p = chosenVelRnd;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "velocity"))))
+        *p = chosenVel;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "gate"))))
-            *p = chosenGate;
+    if (auto* p = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (getParamId (laneIdx, "velocity_rnd"))))
+        *p = chosenVelRnd;
 
-        if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (i, "probability"))))
-            *p = chosenProb;
-    }
+    if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (laneIdx, "gate"))))
+        *p = chosenGate;
+
+    if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (laneIdx, "probability"))))
+        *p = chosenProb;
+
+    if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (laneIdx, "pan"))))
+        *p = chosenPan;
+
+    if (auto* p = dynamic_cast<juce::AudioParameterFloat*> (apvts.getParameter (getParamId (laneIdx, "pan_depth"))))
+        *p = chosenPanDepth;
+
+    if (auto* p = dynamic_cast<juce::AudioParameterChoice*> (apvts.getParameter (getParamId (laneIdx, "pan_rate"))))
+        *p = chosenPanRate;
 
     // Refresh telemetry immediately
     AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
     readLaneParameters (lanes);
     rhythmEngine.updateOfflineTelemetry (lanes);
+}
+
+void MidiRythmGenProcessor::randomizeWholeTonePattern()
+{
+    for (int i = 0; i < AlgorithmicRhythm::kMaxLanes; ++i)
+    {
+        randomizeLane (i);
+    }
 }
 
 void MidiRythmGenProcessor::exportPatternToMidiFile (const juce::File& targetFile, int numBars)

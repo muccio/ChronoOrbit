@@ -21,6 +21,15 @@ public:
     void drawComboBox (juce::Graphics& g, int width, int height, bool isButtonDown,
                        int buttonX, int buttonY, int buttonW, int buttonH,
                        juce::ComboBox& box) override;
+
+    void drawButtonBackground (juce::Graphics& g, juce::Button& button,
+                                const juce::Colour& backgroundColour,
+                                bool shouldDrawButtonAsHighlighted,
+                                bool shouldDrawButtonAsDown) override;
+
+    void drawButtonText (juce::Graphics& g, juce::TextButton& button,
+                         bool shouldDrawButtonAsHighlighted,
+                         bool shouldDrawButtonAsDown) override;
 };
 
 //==============================================================================
@@ -83,19 +92,36 @@ public:
     void paint (juce::Graphics& g) override;
     void mouseDown (const juce::MouseEvent& event) override;
 
-    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float totalWidth, float totalHeight) noexcept
+    static juce::Rectangle<float> computeStepBounds (int step, int totalSteps, float totalWidth, float totalHeight,
+                                                     float swing = 0.0f, float timeWarp = 0.0f) noexcept
     {
         if (totalSteps <= 0)
             return {};
 
         const float margin = 4.0f;
         const float usableWidth = totalWidth - margin * 2.0f;
-        const float slotWidth = usableWidth / static_cast<float> (totalSteps);
-        const float gap = 2.0f;
 
-        const float px = margin + static_cast<float> (step) * slotWidth + gap * 0.5f;
+        const auto getStepTime = [totalSteps, swing, timeWarp] (int s) -> double
+        {
+            if (s <= 0) return 0.0;
+            if (s >= totalSteps) return 1.0;
+            const float swingShift = (s % 2 != 0) ? (swing * 0.5f) : 0.0f;
+            const double t0 = std::clamp (static_cast<double> (static_cast<float> (s) + swingShift) / static_cast<double> (totalSteps), 0.0, 0.999999);
+            const double gamma = std::pow (2.0, static_cast<double> (timeWarp * 1.5f));
+            return (std::abs (timeWarp) > 0.001f) ? std::clamp (std::pow (t0, gamma), 0.0, 0.999999) : t0;
+        };
+
+        const double tStart = getStepTime (step);
+        const double tEnd   = getStepTime (step + 1);
+
+        const float x0 = margin + static_cast<float> (tStart) * usableWidth;
+        const float x1 = margin + static_cast<float> (tEnd) * usableWidth;
+        const float fullW = std::max (3.0f, x1 - x0);
+        const float gap = std::min (2.0f, fullW * 0.2f);
+
+        const float px = x0 + gap * 0.5f;
         const float py = 3.0f;
-        const float pw = std::max (2.0f, slotWidth - gap);
+        const float pw = std::max (2.0f, fullW - gap);
         const float ph = totalHeight - 6.0f;
 
         return { px, py, pw, ph };

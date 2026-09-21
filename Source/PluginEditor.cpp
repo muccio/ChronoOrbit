@@ -117,6 +117,41 @@ void OrbitLookAndFeel::drawComboBox (juce::Graphics& g, int width, int height, b
     g.strokePath (arrow, juce::PathStrokeType (1.5f));
 }
 
+void OrbitLookAndFeel::drawButtonBackground (juce::Graphics& g,
+                                             juce::Button& button,
+                                             const juce::Colour& backgroundColour,
+                                             bool shouldDrawButtonAsHighlighted,
+                                             bool shouldDrawButtonAsDown)
+{
+    auto bounds = button.getLocalBounds().toFloat().reduced (0.5f);
+    auto baseCol = backgroundColour;
+
+    if (shouldDrawButtonAsDown)
+        baseCol = baseCol.darker (0.25f);
+    else if (shouldDrawButtonAsHighlighted)
+        baseCol = baseCol.brighter (0.15f);
+
+    g.setColour (baseCol);
+    g.fillRoundedRectangle (bounds, 4.0f);
+
+    const juce::Colour borderCol = shouldDrawButtonAsHighlighted ? baseCol.brighter (0.45f) : baseCol.brighter (0.2f);
+    g.setColour (borderCol);
+    g.drawRoundedRectangle (bounds, 4.0f, 1.0f);
+}
+
+void OrbitLookAndFeel::drawButtonText (juce::Graphics& g,
+                                       juce::TextButton& button,
+                                       bool /*shouldDrawButtonAsHighlighted*/,
+                                       bool /*shouldDrawButtonAsDown*/)
+{
+    const float fontSize = (button.getHeight() < 26) ? 10.0f : 11.5f;
+    g.setFont (juce::Font (fontSize, juce::Font::bold));
+    g.setColour (button.findColour (button.getToggleState() ? juce::TextButton::textColourOnId
+                                                           : juce::TextButton::textColourOffId));
+
+    g.drawText (button.getButtonText(), button.getLocalBounds(), juce::Justification::centred, true);
+}
+
 //==============================================================================
 // OrbitVisualizerComponent Implementation
 //==============================================================================
@@ -213,6 +248,8 @@ void StepStripComponent::paint (juce::Graphics& g)
 {
     const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+    const float swing = tele.swingValue.load (std::memory_order_relaxed);
+    const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
     const uint32_t activeMask = tele.activePatternMask.load (std::memory_order_relaxed);
     const int curStep = tele.currentStep.load (std::memory_order_relaxed);
     const juce::Colour trackCol = OrbitVisualizerComponent::laneColours[currentTrack];
@@ -227,7 +264,7 @@ void StepStripComponent::paint (juce::Graphics& g)
 
     for (int s = 0; s < steps; ++s)
     {
-        const auto padRect = computeStepBounds (s, steps, width, height);
+        const auto padRect = computeStepBounds (s, steps, width, height, swing, timeWarp);
         const bool isHit = (activeMask & (1U << s)) != 0;
         const bool isPlayhead = (s == curStep);
 
@@ -267,20 +304,42 @@ void StepStripComponent::mouseDown (const juce::MouseEvent& event)
 {
     const auto& tele = processor.getRhythmEngine().getTelemetry (currentTrack);
     const int steps = std::clamp (tele.totalSteps.load (std::memory_order_relaxed), 1, AlgorithmicRhythm::kMaxSteps);
+    const float swing = tele.swingValue.load (std::memory_order_relaxed);
+    const float timeWarp = tele.timeWarpValue.load (std::memory_order_relaxed);
     const float width = static_cast<float> (getWidth());
     const float height = static_cast<float> (getHeight());
-    const float margin = 4.0f;
-    const float usableWidth = width - margin * 2.0f;
 
-    if (steps > 0 && event.position.x >= margin && event.position.x <= (width - margin) && event.position.y >= 0.0f && event.position.y <= height)
+    if (steps > 0 && event.position.x >= 0.0f && event.position.x <= width && event.position.y >= 0.0f && event.position.y <= height)
     {
-        const int s = std::clamp (static_cast<int> ((event.position.x - margin) / (usableWidth / static_cast<float> (steps))), 0, steps - 1);
-        if (onStepToggled)
-            onStepToggled (currentTrack, s);
-        else
-            processor.toggleLaneStep (currentTrack, s);
+        const float mx = event.position.x;
+        int clickedStep = -1;
+        float minCenterDist = 1e9f;
 
-        repaint();
+        for (int s = 0; s < steps; ++s)
+        {
+            const auto bounds = computeStepBounds (s, steps, width, height, swing, timeWarp);
+            if (mx >= bounds.getX() && mx <= bounds.getRight())
+            {
+                clickedStep = s;
+                break;
+            }
+            const float dist = std::abs (mx - bounds.getCentreX());
+            if (dist < minCenterDist)
+            {
+                minCenterDist = dist;
+                clickedStep = s;
+            }
+        }
+
+        if (clickedStep >= 0 && clickedStep < steps)
+        {
+            if (onStepToggled)
+                onStepToggled (currentTrack, clickedStep);
+            else
+                processor.toggleLaneStep (currentTrack, clickedStep);
+
+            repaint();
+        }
     }
 }
 
@@ -816,20 +875,20 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     addAndMakeVisible (subTitleLabel);
 
     // Audition play/stop button
-    playButton.setButtonText ("▶ PLAY");
+    playButton.setButtonText ("PLAY");
     playButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff12202c));
     playButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xff00e5ff));
     playButton.onClick = [this] {
         const bool nextState = !audioProcessor.isInternalPlaybackActive();
         audioProcessor.setInternalPlayback (nextState);
-        playButton.setButtonText (nextState ? "■ STOP" : "▶ PLAY");
+        playButton.setButtonText (nextState ? "STOP" : "PLAY");
         playButton.setColour (juce::TextButton::buttonColourId,
                               nextState ? juce::Colour (0xff00e5ff).withAlpha (0.45f) : juce::Colour (0xff12202c));
     };
     addAndMakeVisible (playButton);
 
     // Whole-tone aleatoric randomizer buttons
-    randomizeButton.setButtonText ("🎲 RND ALL");
+    randomizeButton.setButtonText ("RND ALL");
     randomizeButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff251733));
     randomizeButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffff00aa));
     randomizeButton.setTooltip ("Randomize all 8 tracks with polymetric and whole-tone variations");
@@ -845,7 +904,7 @@ MidiRythmGenEditor::MidiRythmGenEditor (MidiRythmGenProcessor& p)
     addAndMakeVisible (randomizeButton);
 
     // Per-track aleatoric randomizer button
-    randomizeTrackButton.setButtonText ("🎲 RND T1");
+    randomizeTrackButton.setButtonText ("RND T1");
     randomizeTrackButton.setColour (juce::TextButton::buttonColourId, juce::Colour (0xff251733));
     randomizeTrackButton.setColour (juce::TextButton::textColourOffId, juce::Colour (0xffff00aa));
     randomizeTrackButton.setTooltip ("Randomize pattern, algorithm, and parameters for the selected track");
@@ -998,7 +1057,7 @@ void MidiRythmGenEditor::selectTrack (int trackIndex)
     orbitVisualizer.setSelectedLane (currentTrackIndex);
     stepStrip.setTrack (currentTrackIndex);
     stereoPanMeter.setTrack (currentTrackIndex);
-    randomizeTrackButton.setButtonText ("🎲 RND T" + juce::String (currentTrackIndex + 1));
+    randomizeTrackButton.setButtonText ("RND T" + juce::String (currentTrackIndex + 1));
     randomizeTrackButton.setTooltip ("Randomize pattern, algorithm, and parameters for Track " + juce::String (currentTrackIndex + 1));
     bindTrackAttachments (currentTrackIndex);
 }
@@ -1084,6 +1143,12 @@ void MidiRythmGenEditor::bindTrackAttachments (int trackIndex)
 
 void MidiRythmGenEditor::timerCallback()
 {
+    // Synchronize telemetry from APVTS so slider changes (Time Warp, Swing, Steps, etc.)
+    // take immediate visual effect even when DAW transport / audio processing is stopped.
+    AlgorithmicRhythm::LaneParameters lanes[AlgorithmicRhythm::kMaxLanes];
+    audioProcessor.readLaneParameters (lanes);
+    audioProcessor.getRhythmEngine().updateOfflineTelemetry (lanes);
+
     orbitVisualizer.updateAnimation();
     orbitVisualizer.repaint();
     stepStrip.repaint();
@@ -1092,7 +1157,7 @@ void MidiRythmGenEditor::timerCallback()
     trackVectorMatrix.updateVisuals();
 
     const bool isPlaying = audioProcessor.isInternalPlaybackActive();
-    playButton.setButtonText (isPlaying ? "■ STOP" : "▶ PLAY");
+    playButton.setButtonText (isPlaying ? "STOP" : "PLAY");
     playButton.setColour (juce::TextButton::buttonColourId,
                           isPlaying ? juce::Colour (0xff00e5ff).withAlpha (0.45f) : juce::Colour (0xff12202c));
 }

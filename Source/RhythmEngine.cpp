@@ -183,7 +183,7 @@ void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes])
                     int mState = 0;
                     for (int s = 0; s < steps; ++s)
                     {
-                        if (evaluateMarkovHit(mState, params.markovDensity, rng))
+                        if (evaluateMarkovHit(mState, params.markovDensity, offlineRng))
                             activePattern |= (1U << s);
                     }
                 }
@@ -191,7 +191,7 @@ void RhythmEngine::updateOfflineTelemetry(const LaneParameters lanes[kMaxLanes])
                 {
                     for (int s = 0; s < steps; ++s)
                     {
-                        if (evaluatePoissonHit(params.poissonLambda, rng))
+                        if (evaluatePoissonHit(params.poissonLambda, offlineRng))
                             activePattern |= (1U << s);
                     }
                 }
@@ -357,9 +357,13 @@ void RhythmEngine::processBlock(const LaneParameters lanes[kMaxLanes],
         }
         tele.activePatternMask.store(activePattern, std::memory_order_relaxed);
 
-        // Calculate step bounds intersecting this block with safety margins for swing & time warp
-        const int64_t kStart = static_cast<int64_t>(std::floor(ppqStart / ppqPerStep)) - 2;
-        const int64_t kEnd   = static_cast<int64_t>(std::ceil(ppqEnd / ppqPerStep)) + 2;
+        // Calculate step bounds intersecting this block across loop cycles.
+        // Time warp and swing can non-linearly shift steps anywhere within the cycle,
+        // so we evaluate all steps within the cycle(s) intersecting [ppqStart, ppqEnd].
+        const int64_t cycleStart = static_cast<int64_t>(std::floor(ppqStart / loopPpqDuration)) - 1;
+        const int64_t cycleEnd   = static_cast<int64_t>(std::floor(ppqEnd / loopPpqDuration)) + 1;
+        const int64_t kStart = cycleStart * steps;
+        const int64_t kEnd   = (cycleEnd + 1) * steps - 1;
 
         for (int64_t k = kStart; k <= kEnd; ++k)
         {

@@ -188,6 +188,7 @@ public:
 private:
     double currentSampleRate { 44100.0 };
     FastRandom rng { 0xC001CAFE };
+    FastRandom offlineRng { 0x12345678 };
 
     std::array<std::atomic<uint32_t>, kMaxLanes> customPatternMasks;
 
